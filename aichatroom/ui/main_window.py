@@ -62,6 +62,7 @@ class MainWindow:
         self._root.configure(bg=self._bg_dark)
         style = ttk.Style()
         theme.configure_ttk_styles(style, self._bg_dark, self._bg_medium, self._bg_light, self._fg_light)
+        theme.configure_combobox_dropdown(self._root, self._bg_medium, self._fg_light)
 
         # Track selected items
         self._selected_agent: Optional[AIAgent] = None
@@ -186,14 +187,122 @@ class MainWindow:
         ttk.Button(btn_frame, text="+ New", command=self._create_agent).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(btn_frame, text="Delete", command=self._delete_agent).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(8, 0))
 
-    def _create_chat_panel(self, parent: ttk.Frame) -> None:
-        """Create right panel for agent's room chat."""
-        panel = ttk.LabelFrame(parent, text="Chat Room", padding="15")
+    def _create_detail_panel(self, parent: ttk.Frame) -> None:
+        """Create right panel for details (agent settings, room members, chat)."""
+        panel = ttk.Frame(parent)
         panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
+        # Top section: Agent settings and Room members side by side
+        top_frame = ttk.Frame(panel)
+        top_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # Left: Agent Settings
+        details_frame = ttk.LabelFrame(top_frame, text="Agent Settings", padding="10")
+        details_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        # Name with inline save
+        name_frame = ttk.Frame(details_frame)
+        name_frame.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(name_frame, text="Name:").pack(side=tk.LEFT)
+        self._agent_name_var = tk.StringVar()
+        self._agent_name_entry = ttk.Entry(name_frame, textvariable=self._agent_name_var)
+        self._agent_name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+        # Topic with label
+        topic_frame = ttk.Frame(details_frame)
+        topic_frame.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(topic_frame, text="Topic:").pack(side=tk.LEFT)
+        self._topic_var = tk.StringVar()
+        self._topic_entry = ttk.Entry(topic_frame, textvariable=self._topic_var)
+        self._topic_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+        # Model and Status row
+        model_status_frame = ttk.Frame(details_frame)
+        model_status_frame.pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(model_status_frame, text="Model:").pack(side=tk.LEFT)
+        self._agent_model_var = tk.StringVar()
+        self._agent_model_combo = ttk.Combobox(model_status_frame, textvariable=self._agent_model_var, width=15)
+        self._agent_model_combo.pack(side=tk.LEFT, padx=(8, 15))
+
+        ttk.Label(model_status_frame, text="Status:").pack(side=tk.LEFT)
+        self._heartbeat_status_var = tk.StringVar(value="Idle")
+        self._heartbeat_status_label = tk.Label(
+            model_status_frame, textvariable=self._heartbeat_status_var,
+            fg="#7ee787", bg=self._bg_dark, font=("Consolas", 10)
+        )
+        self._heartbeat_status_label.pack(side=tk.LEFT, padx=(8, 0))
+
+        # WPM setting
+        wpm_frame = ttk.Frame(details_frame)
+        wpm_frame.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(wpm_frame, text="WPM:").pack(side=tk.LEFT)
+        self._detail_wpm_var = tk.StringVar(value="40")
+        wpm_entry = ttk.Entry(wpm_frame, textvariable=self._detail_wpm_var, width=6)
+        wpm_entry.pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(wpm_frame, text="(typing speed)", font=("Segoe UI", 8), foreground=self._fg_dim).pack(side=tk.LEFT, padx=(8, 0))
+
+        # Background prompt
+        ttk.Label(details_frame, text="Background:", font=("Segoe UI", 9)).pack(anchor=tk.W)
+        self._agent_prompt_text = tk.Text(
+            details_frame, height=3, wrap=tk.WORD,
+            bg=self._bg_medium, fg=self._fg_light,
+            insertbackground=self._fg_light, font=("Consolas", 9)
+        )
+        self._agent_prompt_text.pack(fill=tk.X, pady=(2, 8))
+
+        # Action buttons
+        btn_row = ttk.Frame(details_frame)
+        btn_row.pack(fill=tk.X)
+        ttk.Button(btn_row, text="Save", command=self._save_agent_details).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(btn_row, text="Knowledge", command=self._open_knowledge_explorer).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(8, 0))
+        ttk.Button(btn_row, text="HUD", command=self._open_hud_history).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(8, 0))
+
+        # Right: Room Members
+        room_frame = ttk.LabelFrame(top_frame, text="Room Members", padding="10", width=300)
+        room_frame.pack(side=tk.LEFT, fill=tk.BOTH)
+        room_frame.pack_propagate(False)
+
+        # Add agent to room controls
+        add_frame = ttk.Frame(room_frame)
+        add_frame.pack(fill=tk.X, pady=(0, 8))
+
+        self._add_agent_var = tk.StringVar()
+        self._add_agent_combo = ttk.Combobox(
+            add_frame, textvariable=self._add_agent_var,
+            state="readonly", width=20
+        )
+        self._add_agent_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(add_frame, text="+", command=self._add_agent_to_room, width=3).pack(side=tk.LEFT, padx=(5, 0))
+
+        # Scrollable frame for room members
+        self._members_canvas = tk.Canvas(
+            room_frame, bg=self._bg_medium, highlightthickness=0
+        )
+        scrollbar = ttk.Scrollbar(room_frame, orient=tk.VERTICAL, command=self._members_canvas.yview)
+        self._members_frame = ttk.Frame(self._members_canvas)
+
+        self._members_frame.bind(
+            "<Configure>",
+            lambda e: self._members_canvas.configure(scrollregion=self._members_canvas.bbox("all"))
+        )
+
+        self._members_canvas.create_window((0, 0), window=self._members_frame, anchor="nw")
+        self._members_canvas.configure(yscrollcommand=scrollbar.set)
+
+        self._members_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Track member widgets for updates
+        self._member_widgets = {}
+
+        # Bottom section: Chat Room
+        chat_frame = ttk.LabelFrame(panel, text="Chat Room", padding="10")
+        chat_frame.pack(fill=tk.BOTH, expand=True)
+
         # Header with controls
-        header = ttk.Frame(panel)
-        header.pack(fill=tk.X, pady=(0, 10))
+        header = ttk.Frame(chat_frame)
+        header.pack(fill=tk.X, pady=(0, 8))
 
         # Heartbeat controls
         self._heartbeat_btn_text = tk.StringVar(value="▶ Start")
@@ -202,7 +311,7 @@ class MainWindow:
 
         # Messages area
         self._messages_text = scrolledtext.ScrolledText(
-            panel, wrap=tk.WORD, state=tk.DISABLED, font=("Consolas", 11),
+            chat_frame, wrap=tk.WORD, state=tk.DISABLED, font=("Consolas", 11),
             bg=self._bg_medium, fg=self._fg_light, insertbackground=self._fg_light,
             padx=10, pady=10
         )
@@ -219,16 +328,21 @@ class MainWindow:
 
         # Typing indicator
         self._typing_var = tk.StringVar(value="")
-        self._typing_label = ttk.Label(panel, textvariable=self._typing_var, foreground="orange")
+        self._typing_label = ttk.Label(chat_frame, textvariable=self._typing_var, foreground="orange")
         self._typing_label.pack(fill=tk.X, pady=(5, 0))
 
         # Message input
-        input_frame = ttk.Frame(panel)
-        input_frame.pack(fill=tk.X, pady=(10, 0))
+        input_frame = ttk.Frame(chat_frame)
+        input_frame.pack(fill=tk.X, pady=(8, 0))
 
         self._message_var = tk.StringVar()
-        msg_entry = ttk.Entry(input_frame, textvariable=self._message_var, font=("Consolas", 11))
-        msg_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        msg_entry = tk.Entry(
+            input_frame, textvariable=self._message_var, font=("Consolas", 11),
+            bg=self._bg_medium, fg=self._fg_light, insertbackground=self._fg_light,
+            relief=tk.FLAT, highlightthickness=1, highlightcolor="#3d5a80",
+            highlightbackground=self._bg_light
+        )
+        msg_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=5)
         msg_entry.bind('<Return>', lambda e: self._send_message())
 
         ttk.Button(input_frame, text="Send", command=self._send_message).pack(side=tk.LEFT, padx=(8, 0))

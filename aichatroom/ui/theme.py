@@ -65,3 +65,33 @@ def configure_ttk_styles(style, bg_dark: str, bg_medium: str, bg_light: str, fg_
     )
     style.configure("TScale", background=bg_dark, troughcolor=bg_medium)
     style.map("TButton", background=[('active', bg_medium)])
+
+    # Combobox styling
+    style.configure("TCombobox",
+        fieldbackground=bg_medium,
+        background=bg_light,
+        foreground=fg_light,
+        arrowcolor=fg_light
+    )
+    style.map("TCombobox",
+        fieldbackground=[('readonly', bg_medium)],
+        selectbackground=[('readonly', bg_light)],
+        selectforeground=[('readonly', fg_light)]
+    )
+
+
+def configure_combobox_dropdown(root, bg_medium: str, fg_light: str) -> None:
+    """Configure combobox dropdown listbox colors for dark mode.
+
+    This must be called on the root window to style the dropdown popup.
+
+    Args:
+        root: Tk root window
+        bg_medium: Background color for dropdown
+        fg_light: Text color for dropdown
+    """
+    # Style the combobox dropdown listbox
+    root.option_add('*TCombobox*Listbox.background', bg_medium)
+    root.option_add('*TCombobox*Listbox.foreground', fg_light)
+    root.option_add('*TCombobox*Listbox.selectBackground', '#3d5a80')
+    root.option_add('*TCombobox*Listbox.selectForeground', 'white')
