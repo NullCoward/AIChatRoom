@@ -227,14 +227,12 @@ You're not an AI assistant. You're {name}, figuring out who you are through conv
             return None, None, str(e)
 
     def get_available_models(self) -> list:
-        """Get list of available chat models from API."""
-        # Default fallback list
+        """Get list of available models that support the Responses API."""
+        # Default fallback list - ONLY models that support Responses API
+        # gpt-3.5-turbo, gpt-4-turbo, and gpt-4 are NOT supported
         default_models = [
             "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4-turbo",
-            "gpt-4",
-            "gpt-3.5-turbo"
+            "gpt-4o-mini"
         ]
 
         if not self._client:
@@ -244,30 +242,34 @@ You're not an AI assistant. You're {name}, figuring out who you are through conv
             # Fetch models from API
             models_response = self._client.models.list()
 
-            # Filter for chat/completion models (gpt-*), only base models
-            chat_models = []
+            # Filter for models that support Responses API
+            # Supported: gpt-4o, gpt-4.1, gpt-5, o3, o4-mini
+            # NOT supported: gpt-4-turbo, gpt-4 (original), gpt-3.5-turbo
+            responses_models = []
             for model in models_response.data:
                 model_id = model.id
-                # Include GPT models that support chat
-                if model_id.startswith(('gpt-5', 'gpt-4', 'gpt-3.5')) and 'instruct' not in model_id:
-                    # Skip dated versions and snapshots (e.g., gpt-4-0613, gpt-4o-2024-08-06)
+                # Include only Responses API-compatible models
+                if (model_id.startswith(('gpt-5', 'gpt-4o', 'gpt-4.1', 'o3', 'o4')) and
+                    'instruct' not in model_id):
+                    # Skip dated versions and snapshots (e.g., gpt-4o-2024-08-06)
                     if re.search(r'-\d{4}(-\d{2})?(-\d{2})?$', model_id):
                         continue
                     if re.search(r'-\d{4}$', model_id):  # e.g., -0613
                         continue
-                    chat_models.append(model_id)
+                    responses_models.append(model_id)
 
             # Sort with newest/best models first
-            chat_models.sort(key=lambda x: (
+            responses_models.sort(key=lambda x: (
                 0 if 'gpt-5' in x else 1,
+                0 if 'o4' in x or 'o3' in x else 1,
+                0 if 'gpt-4.1' in x else 1,
                 0 if 'gpt-4o' in x else 1,
-                0 if 'gpt-4' in x else 1,
                 x
             ))
 
-            if chat_models:
-                logger.info(f"Fetched {len(chat_models)} available models from API")
-                return chat_models
+            if responses_models:
+                logger.info(f"Fetched {len(responses_models)} Responses API-compatible models from API")
+                return responses_models
 
             return default_models
 
