@@ -26,6 +26,7 @@ TOTAL_TOKEN_BUDGET = 10000  # Total tokens available for HUD
 # Message content includes: room context and chat messages
 STATIC_CONTENT_MAX = 5000  # Max tokens for system + self + meta (50% of total)
 MESSAGE_CONTENT_MIN = 5000  # Min tokens reserved for room messages (50% of total)
+SELF_META_MAX = 3000  # Max tokens for self-concept/knowledge store
 
 # =============================================================================
 # Agent Defaults

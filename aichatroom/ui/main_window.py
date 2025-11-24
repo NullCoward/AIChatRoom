@@ -1,11 +1,11 @@
-"""Main window UI using Tkinter.
+"""Main window UI using CustomTkinter for modern appearance.
 
 The main application window that coordinates all UI components for the
 AI Chat Room application.
 """
 
-import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+import customtkinter as ctk
+from tkinter import messagebox
 from typing import Optional, List
 try:
     import keyring
@@ -16,10 +16,17 @@ except ImportError:
 from services import DatabaseService, OpenAIService, HeartbeatService, RoomService, setup_logging, get_logger
 from models import AIAgent, ChatRoom
 from .dialogs import KnowledgeExplorerDialog, SettingsDialog, PromptEditorDialog, HUDHistoryDialog
-from . import theme
 import config
 
 logger = get_logger("ui")
+
+# Set appearance mode and color theme
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+# Use system scaling
+ctk.set_widget_scaling(1.0)
+ctk.set_window_scaling(1.0)
 
 
 class MainWindow:
@@ -46,314 +53,314 @@ class MainWindow:
         self._heartbeat.add_error_callback(self._on_status_update)
 
         # Create main window
-        self._root = tk.Tk()
+        self._root = ctk.CTk()
         self._root.title("AI Chat Room")
         self._root.geometry(f"{config.WINDOW_DEFAULT_WIDTH}x{config.WINDOW_DEFAULT_HEIGHT}")
         self._root.minsize(config.WINDOW_MIN_WIDTH, config.WINDOW_MIN_HEIGHT)
 
-        # Apply theme colors
-        self._bg_dark = theme.BG_DARK
-        self._bg_medium = theme.BG_MEDIUM
-        self._bg_light = theme.BG_LIGHT
-        self._fg_light = theme.FG_LIGHT
-        self._fg_dim = theme.FG_DIM
-
-        # Configure dark mode styling
-        self._root.configure(bg=self._bg_dark)
-        style = ttk.Style()
-        theme.configure_ttk_styles(style, self._bg_dark, self._bg_medium, self._bg_light, self._fg_light)
-        theme.configure_combobox_dropdown(self._root, self._bg_medium, self._fg_light)
+        # Consistent typography - only 2 variations needed
+        # Must be created after root window exists
+        self._font_title = ctk.CTkFont(size=14, weight="bold")
+        self._font_mono = ctk.CTkFont(family="Consolas", size=13)
 
         # Track selected items
         self._selected_agent: Optional[AIAgent] = None
         self._selected_room: Optional[ChatRoom] = None
-        self._rooms_list: List[ChatRoom] = []  # Cache for rooms
-        self._room_agents_list: List[AIAgent] = []  # Cache for agents in selected room
+        self._rooms_list: List[ChatRoom] = []
+        self._room_agents_list: List[AIAgent] = []
 
         # Build UI
+        self._create_menu_bar()
         self._create_ui()
         self._load_data()
 
         # Handle window close
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    def _create_menu_bar(self) -> None:
+        """Create application menu bar."""
+        import tkinter as tk
+
+        menubar = tk.Menu(self._root)
+        self._root.config(menu=menubar)
+
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Settings...", command=self._open_settings)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close)
+
+        # Edit menu
+        edit_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Edit", menu=edit_menu)
+        edit_menu.add_command(label="Prompt Editor...", command=self._open_prompt_editor)
+
+        # View menu
+        view_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="View", menu=view_menu)
+        view_menu.add_command(label="Knowledge Explorer", command=self._open_knowledge_explorer)
+        view_menu.add_command(label="HUD History", command=self._open_hud_history)
+
         logger.info("Application initialized")
 
     def _create_ui(self) -> None:
         """Create all UI elements."""
-        # Create menu bar
-        self._create_menu_bar()
+        # Configure grid weights for the root
+        self._root.grid_columnconfigure(0, weight=0)  # Left panel - fixed width
+        self._root.grid_columnconfigure(1, weight=1)  # Right panel - expandable
+        self._root.grid_rowconfigure(0, weight=1)     # Main content
+        self._root.grid_rowconfigure(1, weight=0)     # Status bar
 
-        # Main container
-        main_frame = ttk.Frame(self._root, padding="10")
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Left panel: Agent list
+        self._create_agent_panel()
 
-        # Main content area
-        content_frame = ttk.Frame(main_frame)
-        content_frame.pack(fill=tk.BOTH, expand=True)
-
-        # Left panel: Browsing/management (agent list)
-        self._create_browse_panel(content_frame)
-
-        # Right panel: Details (agent settings, room members, chat)
-        self._create_detail_panel(content_frame)
+        # Right panel: Details and Chat
+        self._create_main_panel()
 
         # Bottom: Status bar
-        self._create_status_bar(main_frame)
+        self._create_status_bar()
 
-    def _create_menu_bar(self) -> None:
-        """Create the application menu bar."""
-        menubar = tk.Menu(self._root, bg=self._bg_medium, fg=self._fg_light,
-                         activebackground=self._bg_light, activeforeground=self._fg_light)
-        self._root.config(menu=menubar)
+    def _create_agent_panel(self) -> None:
+        """Create left panel for agent list."""
+        panel = ctk.CTkFrame(self._root, width=280)
+        panel.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
+        panel.grid_propagate(False)
 
-        # File menu
-        file_menu = tk.Menu(menubar, tearoff=0, bg=self._bg_medium, fg=self._fg_light,
-                           activebackground=self._bg_light, activeforeground=self._fg_light)
-        menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Settings", command=self._open_settings)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self._on_close)
+        # Title
+        title = ctk.CTkLabel(panel, text="Agents", font=self._font_title)
+        title.pack(pady=(8, 6))
 
-        # Agents menu
-        agents_menu = tk.Menu(menubar, tearoff=0, bg=self._bg_medium, fg=self._fg_light,
-                             activebackground=self._bg_light, activeforeground=self._fg_light)
-        menubar.add_cascade(label="Agents", menu=agents_menu)
-        agents_menu.add_command(label="New Agent", command=self._create_agent)
-        agents_menu.add_command(label="Delete Agent", command=self._delete_agent)
+        # Agent listbox frame
+        list_frame = ctk.CTkFrame(panel, fg_color="transparent")
+        list_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
 
-        # System menu
-        system_menu = tk.Menu(menubar, tearoff=0, bg=self._bg_medium, fg=self._fg_light,
-                             activebackground=self._bg_light, activeforeground=self._fg_light)
-        menubar.add_cascade(label="System", menu=system_menu)
-        system_menu.add_command(label="Edit Prompts", command=self._open_prompt_editor)
+        # Scrollable frame for agents
+        self._agent_scroll = ctk.CTkScrollableFrame(list_frame, fg_color=("gray90", "gray17"))
+        self._agent_scroll.pack(fill="both", expand=True)
 
-        # Help menu
-        help_menu = tk.Menu(menubar, tearoff=0, bg=self._bg_medium, fg=self._fg_light,
-                           activebackground=self._bg_light, activeforeground=self._fg_light)
-        menubar.add_cascade(label="Help", menu=help_menu)
-        help_menu.add_command(label="About", command=self._show_about)
-
-    def _open_prompt_editor(self) -> None:
-        """Open the prompt editor dialog."""
-        dialog = PromptEditorDialog(self._root)
-
-    def _show_about(self) -> None:
-        """Show about dialog."""
-        messagebox.showinfo(
-            "About AI Chat Room",
-            "AI Chat Room\n\n"
-            "A multi-agent chat application where AI agents communicate via OpenAI's Responses API.\n\n"
-            "Each agent IS a room - agent.id = room.id\n\n"
-            "Version 1.0"
-        )
-
-    def _create_browse_panel(self, parent: ttk.Frame) -> None:
-        """Create left panel for browsing and management (agent list)."""
-        panel = ttk.Frame(parent, width=280)
-        panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 15))
-        panel.pack_propagate(False)
-
-        # Agent list with status indicators
-        agents_frame = ttk.LabelFrame(panel, text="Agents", padding="10")
-        agents_frame.pack(fill=tk.BOTH, expand=True)
-
-        # Agent listbox with scrollbar
-        list_container = ttk.Frame(agents_frame)
-        list_container.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-
-        self._agent_listbox = tk.Listbox(
-            list_container, bg=self._bg_medium, fg=self._fg_light,
-            selectbackground="#3d5a80", selectforeground="white",
-            font=("Consolas", 11), activestyle='none'
-        )
-        agent_scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, command=self._agent_listbox.yview)
-        self._agent_listbox.configure(yscrollcommand=agent_scrollbar.set)
-
-        self._agent_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        agent_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self._agent_listbox.bind('<<ListboxSelect>>', self._on_agent_listbox_select)
-
-        # Right-click context menu for agent list
-        self._agent_context_menu = tk.Menu(self._root, tearoff=0, bg=self._bg_medium, fg=self._fg_light,
-                                           activebackground=self._bg_light, activeforeground=self._fg_light)
-        self._agent_context_menu.add_command(label="Add to current room", command=self._add_agent_to_current_room)
-        self._agent_context_menu.add_command(label="Remove from current room", command=self._remove_agent_from_current_room)
-        self._agent_listbox.bind('<Button-3>', self._show_agent_context_menu)
-
-        # New/Delete buttons
-        btn_frame = ttk.Frame(agents_frame)
-        btn_frame.pack(fill=tk.X)
-        ttk.Button(btn_frame, text="+ New", command=self._create_agent).pack(side=tk.LEFT, expand=True, fill=tk.X)
-        ttk.Button(btn_frame, text="Delete", command=self._delete_agent).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(8, 0))
-
-    def _create_detail_panel(self, parent: ttk.Frame) -> None:
-        """Create right panel for details (agent settings, room members, chat)."""
-        panel = ttk.Frame(parent)
-        panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        # Top section: Agent settings and Room members side by side
-        top_frame = ttk.Frame(panel)
-        top_frame.pack(fill=tk.X, pady=(0, 10))
-
-        # Left: Agent Settings
-        details_frame = ttk.LabelFrame(top_frame, text="Agent Settings", padding="10")
-        details_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-
-        # Name with inline save
-        name_frame = ttk.Frame(details_frame)
-        name_frame.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(name_frame, text="Name:").pack(side=tk.LEFT)
-        self._agent_name_var = tk.StringVar()
-        self._agent_name_entry = ttk.Entry(name_frame, textvariable=self._agent_name_var)
-        self._agent_name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
-
-        # Topic with label
-        topic_frame = ttk.Frame(details_frame)
-        topic_frame.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(topic_frame, text="Topic:").pack(side=tk.LEFT)
-        self._topic_var = tk.StringVar()
-        self._topic_entry = ttk.Entry(topic_frame, textvariable=self._topic_var)
-        self._topic_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
-
-        # Model and Status row
-        model_status_frame = ttk.Frame(details_frame)
-        model_status_frame.pack(fill=tk.X, pady=(0, 8))
-
-        ttk.Label(model_status_frame, text="Model:").pack(side=tk.LEFT)
-        self._agent_model_var = tk.StringVar()
-        self._agent_model_combo = ttk.Combobox(model_status_frame, textvariable=self._agent_model_var, width=15)
-        self._agent_model_combo.pack(side=tk.LEFT, padx=(8, 15))
-
-        ttk.Label(model_status_frame, text="Status:").pack(side=tk.LEFT)
-        self._heartbeat_status_var = tk.StringVar(value="Idle")
-        self._heartbeat_status_label = tk.Label(
-            model_status_frame, textvariable=self._heartbeat_status_var,
-            fg="#7ee787", bg=self._bg_dark, font=("Consolas", 10)
-        )
-        self._heartbeat_status_label.pack(side=tk.LEFT, padx=(8, 0))
-
-        # WPM setting
-        wpm_frame = ttk.Frame(details_frame)
-        wpm_frame.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(wpm_frame, text="WPM:").pack(side=tk.LEFT)
-        self._detail_wpm_var = tk.StringVar(value="40")
-        wpm_entry = ttk.Entry(wpm_frame, textvariable=self._detail_wpm_var, width=6)
-        wpm_entry.pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Label(wpm_frame, text="(typing speed)", font=("Segoe UI", 8), foreground=self._fg_dim).pack(side=tk.LEFT, padx=(8, 0))
-
-        # Background prompt
-        ttk.Label(details_frame, text="Background:", font=("Segoe UI", 9)).pack(anchor=tk.W)
-        self._agent_prompt_text = tk.Text(
-            details_frame, height=3, wrap=tk.WORD,
-            bg=self._bg_medium, fg=self._fg_light,
-            insertbackground=self._fg_light, font=("Consolas", 9)
-        )
-        self._agent_prompt_text.pack(fill=tk.X, pady=(2, 8))
+        # Agent buttons will be added here dynamically
+        self._agent_buttons = []
 
         # Action buttons
-        btn_row = ttk.Frame(details_frame)
-        btn_row.pack(fill=tk.X)
-        ttk.Button(btn_row, text="Save", command=self._save_agent_details).pack(side=tk.LEFT, expand=True, fill=tk.X)
-        ttk.Button(btn_row, text="Knowledge", command=self._open_knowledge_explorer).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(8, 0))
-        ttk.Button(btn_row, text="HUD", command=self._open_hud_history).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(8, 0))
+        btn_frame = ctk.CTkFrame(panel, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=6, pady=(0, 8))
+
+        ctk.CTkButton(btn_frame, text="+ New", command=self._create_agent, height=28).pack(side="left", expand=True, fill="x", padx=(0, 3))
+        ctk.CTkButton(btn_frame, text="Delete", command=self._delete_agent, height=28, fg_color="gray40", hover_color="gray30").pack(side="left", expand=True, fill="x", padx=(3, 0))
+
+    def _create_main_panel(self) -> None:
+        """Create right panel with agent settings and chat."""
+        panel = ctk.CTkFrame(self._root)
+        panel.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
+
+        # Configure grid for panel
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(0, weight=0)  # Collapsible settings header
+        panel.grid_rowconfigure(1, weight=0)  # Collapsible settings content
+        panel.grid_rowconfigure(2, weight=1)  # Chat row (main focus)
+
+        # Collapsible settings section
+        self._create_collapsible_settings(panel)
+
+        # Main: Chat Room (takes most space)
+        self._create_chat_section(panel)
+
+    def _create_collapsible_settings(self, parent) -> None:
+        """Create collapsible settings and members section."""
+        # Header bar with toggle
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=6, pady=(6, 3))
+
+        self._settings_expanded = True
+        self._settings_toggle_text = ctk.StringVar(value="▼ Agent Settings")
+
+        toggle_btn = ctk.CTkButton(
+            header,
+            textvariable=self._settings_toggle_text,
+            command=self._toggle_settings,
+            fg_color="transparent",
+            hover_color=("gray70", "gray30"),
+            anchor="w",
+            font=self._font_title,
+            height=26
+        )
+        toggle_btn.pack(side="left")
+
+        # Collapsible content frame
+        self._settings_content = ctk.CTkFrame(parent)
+        self._settings_content.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 3))
+
+        # Configure grid inside content
+        self._settings_content.grid_columnconfigure(0, weight=1)
+        self._settings_content.grid_columnconfigure(1, weight=1)
+        self._settings_content.grid_rowconfigure(0, weight=1)
+
+        # Left: Agent Settings
+        self._create_settings_section(self._settings_content)
 
         # Right: Room Members
-        room_frame = ttk.LabelFrame(top_frame, text="Room Members", padding="10", width=300)
-        room_frame.pack(side=tk.LEFT, fill=tk.BOTH)
-        room_frame.pack_propagate(False)
+        self._create_members_section(self._settings_content)
 
-        # Add agent to room controls
-        add_frame = ttk.Frame(room_frame)
-        add_frame.pack(fill=tk.X, pady=(0, 8))
+    def _toggle_settings(self) -> None:
+        """Toggle the settings panel visibility."""
+        if self._settings_expanded:
+            self._settings_content.grid_remove()
+            self._settings_toggle_text.set("▶ Agent Settings")
+            self._settings_expanded = False
+        else:
+            self._settings_content.grid()
+            self._settings_toggle_text.set("▼ Agent Settings")
+            self._settings_expanded = True
 
-        self._add_agent_var = tk.StringVar()
-        self._add_agent_combo = ttk.Combobox(
-            add_frame, textvariable=self._add_agent_var,
-            state="readonly", width=20
+    def _on_heartbeat_slider_change(self, *args) -> None:
+        """Handle heartbeat slider value change."""
+        value = self._heartbeat_interval_var.get()
+        self._heartbeat_interval_label.configure(text=f"{value:.1f}s")
+
+    def _create_settings_section(self, parent) -> None:
+        """Create agent settings section."""
+        frame = ctk.CTkFrame(parent)
+        frame.grid(row=0, column=0, sticky="nsew", padx=(0, 3), pady=3)
+
+        # Settings content (no title - header has it)
+        content = ctk.CTkFrame(frame, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=6, pady=6)
+
+        # Row 1: Name
+        row1 = ctk.CTkFrame(content, fg_color="transparent")
+        row1.pack(fill="x", pady=(0, 5))
+
+        ctk.CTkLabel(row1, text="Name:", width=42, anchor="w").pack(side="left")
+        self._agent_name_var = ctk.StringVar()
+        ctk.CTkEntry(row1, textvariable=self._agent_name_var, height=26).pack(side="left", fill="x", expand=True, padx=(3, 0))
+
+        # Row 2: Model, WPM, Status
+        row2 = ctk.CTkFrame(content, fg_color="transparent")
+        row2.pack(fill="x", pady=(0, 5))
+
+        ctk.CTkLabel(row2, text="Model:", width=42, anchor="w").pack(side="left")
+        self._agent_model_var = ctk.StringVar()
+        self._agent_model_combo = ctk.CTkComboBox(row2, variable=self._agent_model_var, width=110, height=26)
+        self._agent_model_combo.pack(side="left", padx=(3, 10))
+
+        ctk.CTkLabel(row2, text="WPM:", width=35, anchor="w").pack(side="left")
+        self._detail_wpm_var = ctk.StringVar(value="80")
+        ctk.CTkEntry(row2, textvariable=self._detail_wpm_var, width=45, height=26).pack(side="left", padx=(3, 10))
+
+        # Heartbeat interval slider
+        ctk.CTkLabel(row2, text="Speed:", width=40, anchor="w").pack(side="left")
+        self._heartbeat_interval_var = ctk.DoubleVar(value=5.0)
+        self._heartbeat_slider = ctk.CTkSlider(
+            row2,
+            from_=1.0,
+            to=10.0,
+            variable=self._heartbeat_interval_var,
+            width=80,
+            height=16,
+            number_of_steps=18  # 0.5s increments
         )
-        self._add_agent_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(add_frame, text="+", command=self._add_agent_to_room, width=3).pack(side=tk.LEFT, padx=(5, 0))
+        self._heartbeat_slider.pack(side="left", padx=(3, 3))
+        self._heartbeat_interval_label = ctk.CTkLabel(row2, text="5.0s", width=30)
+        self._heartbeat_interval_label.pack(side="left", padx=(0, 10))
+        self._heartbeat_interval_var.trace_add("write", self._on_heartbeat_slider_change)
 
-        # Scrollable frame for room members
-        self._members_canvas = tk.Canvas(
-            room_frame, bg=self._bg_medium, highlightthickness=0
-        )
-        scrollbar = ttk.Scrollbar(room_frame, orient=tk.VERTICAL, command=self._members_canvas.yview)
-        self._members_frame = ttk.Frame(self._members_canvas)
+        self._heartbeat_status_var = ctk.StringVar(value="● Idle")
+        self._heartbeat_status_label = ctk.CTkLabel(row2, textvariable=self._heartbeat_status_var, text_color="#7ee787")
+        self._heartbeat_status_label.pack(side="left")
 
-        self._members_frame.bind(
-            "<Configure>",
-            lambda e: self._members_canvas.configure(scrollregion=self._members_canvas.bbox("all"))
-        )
+        # Row 3: Permissions and Background label
+        row3 = ctk.CTkFrame(content, fg_color="transparent")
+        row3.pack(fill="x", pady=(0, 4))
 
-        self._members_canvas.create_window((0, 0), window=self._members_frame, anchor="nw")
-        self._members_canvas.configure(yscrollcommand=scrollbar.set)
+        self._can_create_agents_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(row3, text="Can create agents", variable=self._can_create_agents_var, height=22, checkbox_width=18, checkbox_height=18).pack(side="left")
+        ctk.CTkLabel(row3, text="Background:", anchor="w").pack(side="right")
 
-        self._members_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        # Background prompt
+        self._agent_prompt_text = ctk.CTkTextbox(content, height=50)
+        self._agent_prompt_text.pack(fill="x", pady=(0, 5))
 
-        # Track member widgets for updates
+        # Action buttons
+        btn_frame = ctk.CTkFrame(content, fg_color="transparent")
+        btn_frame.pack(fill="x")
+
+        ctk.CTkButton(btn_frame, text="Save", command=self._save_agent_details, height=26, width=60).pack(side="left", padx=(0, 3))
+        ctk.CTkButton(btn_frame, text="Knowledge", command=self._open_knowledge_explorer, height=26, width=70, fg_color="gray40", hover_color="gray30").pack(side="left", padx=(0, 3))
+        ctk.CTkButton(btn_frame, text="HUD", command=self._open_hud_history, height=26, width=45, fg_color="gray40", hover_color="gray30").pack(side="left")
+
+    def _create_members_section(self, parent) -> None:
+        """Create room members section."""
+        frame = ctk.CTkFrame(parent)
+        frame.grid(row=0, column=1, sticky="nsew", padx=(3, 0), pady=3)
+
+        content = ctk.CTkFrame(frame, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=6, pady=6)
+
+        # Title row with add controls
+        header = ctk.CTkFrame(content, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 5))
+
+        ctk.CTkLabel(header, text="Room Members", font=self._font_title).pack(side="left")
+
+        ctk.CTkButton(header, text="+", command=self._add_agent_to_room, width=26, height=26).pack(side="right")
+        self._add_agent_var = ctk.StringVar()
+        self._add_agent_combo = ctk.CTkComboBox(header, variable=self._add_agent_var, height=26, width=100)
+        self._add_agent_combo.pack(side="right", padx=(0, 3))
+
+        # Members list
+        self._members_scroll = ctk.CTkScrollableFrame(content, fg_color=("gray90", "gray17"))
+        self._members_scroll.pack(fill="both", expand=True)
+
         self._member_widgets = {}
 
-        # Bottom section: Chat Room
-        chat_frame = ttk.LabelFrame(panel, text="Chat Room", padding="10")
-        chat_frame.pack(fill=tk.BOTH, expand=True)
+    def _create_chat_section(self, parent) -> None:
+        """Create chat room section."""
+        frame = ctk.CTkFrame(parent)
+        frame.grid(row=2, column=0, sticky="nsew", padx=6, pady=(3, 6))
+
+        # Configure grid
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(1, weight=1)  # Messages area expands
 
         # Header with controls
-        header = ttk.Frame(chat_frame)
-        header.pack(fill=tk.X, pady=(0, 8))
+        header = ctk.CTkFrame(frame, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 5))
 
-        # Heartbeat controls
-        self._heartbeat_btn_text = tk.StringVar(value="▶ Start")
-        ttk.Button(header, textvariable=self._heartbeat_btn_text, command=self._toggle_heartbeat).pack(side=tk.LEFT)
-        ttk.Button(header, text="Clear", command=self._clear_chat).pack(side=tk.LEFT, padx=(8, 0))
+        ctk.CTkLabel(header, text="Chat Room", font=self._font_title).pack(side="left")
 
-        # Messages area
-        self._messages_text = scrolledtext.ScrolledText(
-            chat_frame, wrap=tk.WORD, state=tk.DISABLED, font=("Consolas", 11),
-            bg=self._bg_medium, fg=self._fg_light, insertbackground=self._fg_light,
-            padx=10, pady=10
-        )
-        self._messages_text.pack(fill=tk.BOTH, expand=True)
+        # Heartbeat controls on the right
+        self._heartbeat_btn_text = ctk.StringVar(value="▶ Start")
+        ctk.CTkButton(header, textvariable=self._heartbeat_btn_text, command=self._toggle_heartbeat, width=70, height=26).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(header, text="Clear", command=self._clear_chat, width=50, height=26, fg_color="gray40", hover_color="gray30").pack(side="right")
 
-        # Configure tags for different message types - bright colors for dark mode
-        self._messages_text.tag_configure("system", foreground="#888888", font=("Consolas", 10, "italic"))
-        self._messages_text.tag_configure("user", foreground="#58a6ff", font=("Consolas", 12, "bold"))  # Bright blue
-        self._messages_text.tag_configure("agent", foreground="#7ee787", font=("Consolas", 12, "bold"))  # Bright green
-        self._messages_text.tag_configure("timestamp", foreground="#6e7681", font=("Consolas", 9))
-        self._messages_text.tag_configure("image_link", foreground="#d2a8ff", underline=True)  # Purple
-        self._messages_text.tag_configure("typing", foreground="#ffa657", font=("Consolas", 11, "italic"))  # Orange
-        self._messages_text.tag_configure("content", foreground=self._fg_light, font=("Consolas", 11))
+        # Messages area - monospace for readability
+        self._messages_text = ctk.CTkTextbox(frame, state="disabled", font=self._font_mono)
+        self._messages_text.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 5))
 
         # Typing indicator
-        self._typing_var = tk.StringVar(value="")
-        self._typing_label = ttk.Label(chat_frame, textvariable=self._typing_var, foreground="orange")
-        self._typing_label.pack(fill=tk.X, pady=(5, 0))
+        self._typing_var = ctk.StringVar(value="")
+        self._typing_label = ctk.CTkLabel(frame, textvariable=self._typing_var, text_color="orange", height=18)
+        self._typing_label.grid(row=2, column=0, sticky="ew", padx=8)
 
         # Message input
-        input_frame = ttk.Frame(chat_frame)
-        input_frame.pack(fill=tk.X, pady=(8, 0))
+        input_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        input_frame.grid(row=3, column=0, sticky="ew", padx=8, pady=(3, 8))
 
-        self._message_var = tk.StringVar()
-        msg_entry = tk.Entry(
-            input_frame, textvariable=self._message_var, font=("Consolas", 11),
-            bg=self._bg_medium, fg=self._fg_light, insertbackground=self._fg_light,
-            relief=tk.FLAT, highlightthickness=1, highlightcolor="#3d5a80",
-            highlightbackground=self._bg_light
-        )
-        msg_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=5)
-        msg_entry.bind('<Return>', lambda e: self._send_message())
+        self._message_var = ctk.StringVar()
+        self._message_entry = ctk.CTkEntry(input_frame, textvariable=self._message_var, height=32, placeholder_text="Type a message...")
+        self._message_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self._message_entry.bind('<Return>', lambda e: self._send_message())
 
-        ttk.Button(input_frame, text="Send", command=self._send_message).pack(side=tk.LEFT, padx=(8, 0))
+        ctk.CTkButton(input_frame, text="Send", command=self._send_message, width=60, height=32).pack(side="left")
 
-    def _create_status_bar(self, parent: ttk.Frame) -> None:
+    def _create_status_bar(self) -> None:
         """Create status bar."""
-        frame = ttk.Frame(parent)
-        frame.pack(fill=tk.X, pady=(10, 0))
+        frame = ctk.CTkFrame(self._root, height=24, corner_radius=0)
+        frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 6))
 
-        self._status_var = tk.StringVar(value="Ready")
-        ttk.Label(frame, textvariable=self._status_var, relief=tk.SUNKEN).pack(fill=tk.X)
+        self._status_var = ctk.StringVar(value="Ready")
+        ctk.CTkLabel(frame, textvariable=self._status_var, text_color="gray").pack(side="left", padx=8, pady=4)
 
     def _load_data(self) -> None:
         """Load initial data from database."""
@@ -362,111 +369,89 @@ class MainWindow:
         self._refresh_messages()
 
     def _refresh_agent_list(self) -> None:
-        """Refresh the agent listbox with status indicators."""
+        """Refresh the agent list with status indicators."""
         # Get all agents
         agents = self._database.get_all_agents()
-        self._agents_list = [a for a in agents if not a.is_architect]  # Exclude architect
+        self._agents_list = [a for a in agents if not a.is_architect]
 
-        # Clear and repopulate listbox
-        self._agent_listbox.delete(0, tk.END)
+        # Clear existing buttons
+        for btn in self._agent_buttons:
+            btn.destroy()
+        self._agent_buttons = []
+
+        # Create buttons for each agent
         for agent in self._agents_list:
-            # Status indicator
             status = agent.status if agent.status else "idle"
-            indicator = {
-                "idle": "●",
-                "thinking": "◐",
-                "typing": "⌨",
-                "sending": "↑"
-            }.get(status, "●")
+            indicator = {"idle": "●", "thinking": "◐", "typing": "⌨", "sending": "↑", "sleeping": "💤"}.get(status, "●")
+            color = {"idle": "#7ee787", "thinking": "#ffa657", "typing": "#79c0ff", "sending": "#d2a8ff", "sleeping": "#8b8b8b"}.get(status, "#7ee787")
+
             name = agent.name or "Unnamed"
-            self._agent_listbox.insert(tk.END, f"{indicator} {name} (#{agent.id})")
+            text = f"{indicator} {name} (#{agent.id})"
 
-        # Select first agent if none selected
-        if self._agents_list and not self._selected_agent:
-            self._agent_listbox.selection_set(0)
-            self._on_agent_listbox_select(None)
-        elif self._selected_agent:
-            # Re-select current agent
-            for i, a in enumerate(self._agents_list):
-                if a.id == self._selected_agent.id:
-                    self._agent_listbox.selection_set(i)
-                    break
+            btn = ctk.CTkButton(
+                self._agent_scroll,
+                text=text,
+                anchor="w",
+                height=28,
+                fg_color="transparent" if not (self._selected_agent and agent.id == self._selected_agent.id) else ("gray75", "gray25"),
+                hover_color=("gray70", "gray30"),
+                text_color=color,
+                command=lambda a=agent: self._select_agent(a)
+            )
+            btn.pack(fill="x", pady=1, padx=3)
+            self._agent_buttons.append(btn)
 
-        # Update model combo with available models
+        # Update model combo
         if hasattr(self, '_agent_model_combo'):
-            self._agent_model_combo['values'] = self._openai.get_available_models()
+            models = self._openai.get_available_models()
+            self._agent_model_combo.configure(values=models)
 
-    def _on_agent_listbox_select(self, event) -> None:
-        """Handle agent selection from listbox."""
-        selection = self._agent_listbox.curselection()
-        if not selection:
-            return
-
-        idx = selection[0]
-        if idx < 0 or idx >= len(self._agents_list):
-            return
-
-        self._selected_agent = self._agents_list[idx]
-        # Room is the agent's own room (agent = room)
+    def _select_agent(self, agent: AIAgent) -> None:
+        """Select an agent and update the UI."""
+        self._selected_agent = agent
         self._selected_room = ChatRoom(
-            id=self._selected_agent.id,
-            name=f"{self._selected_agent.id}",
-            created_at=self._selected_agent.created_at
+            id=agent.id,
+            name=f"{agent.id}",
+            created_at=agent.created_at
         )
 
         # Update details fields
-        self._agent_name_var.set(self._selected_agent.name)
-        self._agent_model_var.set(self._selected_agent.model)
-        self._agent_prompt_text.delete("1.0", tk.END)
-        self._agent_prompt_text.insert("1.0", self._selected_agent.background_prompt)
-        self._topic_var.set(self._selected_agent.room_topic or "")
-
-        # Load WPM from agent (room-level setting)
-        self._detail_wpm_var.set(str(self._selected_agent.room_wpm))
+        self._agent_name_var.set(agent.name)
+        self._agent_model_var.set(agent.model)
+        self._agent_prompt_text.delete("1.0", "end")
+        self._agent_prompt_text.insert("1.0", agent.background_prompt)
+        self._detail_wpm_var.set(str(agent.room_wpm))
+        self._can_create_agents_var.set(agent.can_create_agents)
+        self._heartbeat_interval_var.set(agent.heartbeat_interval)
+        self._heartbeat_interval_label.configure(text=f"{agent.heartbeat_interval:.1f}s")
 
         # Update heartbeat status
-        status = self._selected_agent.status if self._selected_agent.status else "idle"
-        status_text = {
-            "idle": "● Idle",
-            "thinking": "◐ Waiting for API...",
-            "typing": "⌨ Typing...",
-            "sending": "↑ Sending..."
-        }.get(status, f"● {status}")
+        status = agent.status if agent.status else "idle"
+        status_text = {"idle": "● Idle", "thinking": "◐ Waiting...", "typing": "⌨ Typing...", "sending": "↑ Sending...", "sleeping": "💤 Sleeping"}.get(status, f"● {status}")
+        color = {"idle": "#7ee787", "thinking": "#ffa657", "typing": "#79c0ff", "sending": "#d2a8ff", "sleeping": "#8b8b8b"}.get(status, "#7ee787")
         self._heartbeat_status_var.set(status_text)
-        self._heartbeat_status_label.configure(fg=theme.STATUS_COLORS.get(status, self._fg_light))
+        self._heartbeat_status_label.configure(text_color=color)
 
-        # Update available agents dropdown
+        # Refresh related UI
+        self._refresh_agent_list()
         self._refresh_add_agent_combo()
-
-        # Refresh chat and status
         self._refresh_messages()
         self._update_room_status()
 
     def _create_agent(self) -> None:
         """Create a new agent."""
-        # Create agent with default values
         agent = AIAgent(
             name="New Agent",
             model="gpt-4o-mini",
             background_prompt="You are a helpful AI assistant."
         )
         agent_id = self._database.save_agent(agent)
-        agent.id = agent_id  # Update the agent object with the returned ID
+        agent.id = agent_id
 
-        # Auto-join to own room
         self._room_service.join_room(agent, agent.id)
-
-        # Set as selected and refresh
         self._selected_agent = agent
         self._refresh_agent_list()
-        # Select the new agent in the listbox
-        for i, a in enumerate(self._agents_list):
-            if a.id == agent.id:
-                self._agent_listbox.selection_clear(0, tk.END)
-                self._agent_listbox.selection_set(i)
-                self._agent_listbox.see(i)
-                break
-        self._on_agent_listbox_select(None)
+        self._select_agent(agent)
 
     def _delete_agent(self) -> None:
         """Delete the selected agent."""
@@ -486,35 +471,33 @@ class MainWindow:
 
         self._selected_agent.name = self._agent_name_var.get()
         self._selected_agent.model = self._agent_model_var.get()
-        self._selected_agent.background_prompt = self._agent_prompt_text.get("1.0", tk.END).strip()
-        self._selected_agent.room_topic = self._topic_var.get()
+        self._selected_agent.background_prompt = self._agent_prompt_text.get("1.0", "end").strip()
+        self._selected_agent.can_create_agents = self._can_create_agents_var.get()
+        self._selected_agent.heartbeat_interval = self._heartbeat_interval_var.get()
 
-        # Save WPM to agent (room-level setting)
         try:
             self._selected_agent.room_wpm = int(self._detail_wpm_var.get())
         except ValueError:
             pass
 
         self._database.save_agent(self._selected_agent)
-
         self._refresh_agent_list()
+        self._status_var.set(f"Saved agent {self._selected_agent.id}")
 
     def _refresh_add_agent_combo(self) -> None:
         """Refresh the dropdown of agents that can be added to the room."""
         if not self._selected_room:
-            self._add_agent_combo['values'] = []
+            self._add_agent_combo.configure(values=[])
             return
 
-        # Get agents in room
         room_agents = self._room_service.get_agents_in_room(self._selected_room.id)
         room_agent_ids = {a.id for a in room_agents}
 
-        # Get all agents not in room
         all_agents = self._database.get_all_agents()
         available = [a for a in all_agents if a.id not in room_agent_ids and not a.is_architect]
 
         options = [f"{a.id}: {a.name or 'Unnamed'}" for a in available]
-        self._add_agent_combo['values'] = options
+        self._add_agent_combo.configure(values=options)
         self._available_agents_to_add = available
 
     def _add_agent_to_room(self) -> None:
@@ -522,110 +505,164 @@ class MainWindow:
         if not self._selected_room:
             return
 
-        idx = self._add_agent_combo.current()
-        if idx < 0 or not hasattr(self, '_available_agents_to_add') or idx >= len(self._available_agents_to_add):
+        selection = self._add_agent_var.get()
+        if not selection or not hasattr(self, '_available_agents_to_add'):
             return
 
-        agent = self._available_agents_to_add[idx]
-        self._room_service.join_room(agent, self._selected_room.id)
-        self._update_room_status()
-        self._refresh_add_agent_combo()
-        self._add_agent_var.set("")
+        # Find the agent by the selection string
+        for agent in self._available_agents_to_add:
+            if selection.startswith(f"{agent.id}:"):
+                self._room_service.join_room(agent, self._selected_room.id)
+                self._update_room_status()
+                self._refresh_add_agent_combo()
+                self._add_agent_var.set("")
+                break
 
-    def _show_agent_context_menu(self, event) -> None:
-        """Show context menu for agent list on right-click."""
-        # Select the item under the cursor
-        idx = self._agent_listbox.nearest(event.y)
-        if idx >= 0:
-            self._agent_listbox.selection_clear(0, tk.END)
-            self._agent_listbox.selection_set(idx)
-            self._agent_listbox.activate(idx)
-            # Store the right-clicked agent
-            if idx < len(self._agents_list):
-                self._right_clicked_agent = self._agents_list[idx]
-                # Show the context menu
-                self._agent_context_menu.tk_popup(event.x_root, event.y_root)
+    def _update_room_status(self) -> None:
+        """Update the room members display."""
+        # Clear existing widgets
+        for widget in self._members_scroll.winfo_children():
+            widget.destroy()
+        self._member_widgets = {}
 
-    def _add_agent_to_current_room(self) -> None:
-        """Add the right-clicked agent to the currently selected room."""
         if not self._selected_room:
-            messagebox.showwarning("No Room", "Please select an agent/room first.")
+            ctk.CTkLabel(self._members_scroll, text="No room selected", text_color="gray").pack(pady=6)
             return
 
-        if not hasattr(self, '_right_clicked_agent') or not self._right_clicked_agent:
+        self._room_agents_list = self._room_service.get_agents_in_room(self._selected_room.id)
+
+        if not self._room_agents_list:
+            ctk.CTkLabel(self._members_scroll, text="No agents in room", text_color="gray").pack(pady=6)
             return
 
-        agent = self._right_clicked_agent
+        owner_id = self._selected_room.id
+        sorted_agents = sorted(self._room_agents_list, key=lambda a: (0 if a.id == owner_id else 1, a.id))
 
-        # Check if agent is already in the room
-        room_agents = self._room_service.get_agents_in_room(self._selected_room.id)
-        if any(a.id == agent.id for a in room_agents):
-            messagebox.showinfo("Already Member", f"Agent {agent.id} is already in this room.")
-            return
+        for agent in sorted_agents:
+            is_owner = agent.id == owner_id
 
-        self._room_service.join_room(agent, self._selected_room.id)
-        self._update_room_status()
-        self._refresh_add_agent_combo()
-        self._status_var.set(f"Added Agent {agent.id} to room {self._selected_room.id}")
+            if agent.is_architect:
+                display = "The Architect"
+            elif is_owner:
+                display = f"★ {agent.name or 'Unnamed'} (#{agent.id})"
+            else:
+                display = f"   {agent.name or 'Unnamed'} (#{agent.id})"
 
-    def _remove_agent_from_current_room(self) -> None:
-        """Remove the right-clicked agent from the currently selected room."""
+            color = "#ffd700" if is_owner else "#58a6ff"
+            status = agent.status if agent.status else "idle"
+            status_color = {"idle": "#7ee787", "thinking": "#ffa657", "typing": "#79c0ff", "sleeping": "#8b8b8b"}.get(status, "#7ee787")
+
+            member_frame = ctk.CTkFrame(self._members_scroll, fg_color="transparent")
+            member_frame.pack(fill="x", pady=1)
+
+            ctk.CTkLabel(member_frame, text=display, text_color=color, anchor="w").pack(side="left")
+            ctk.CTkLabel(member_frame, text=f" ● {status}", text_color=status_color).pack(side="left")
+
+    def _refresh_messages(self) -> None:
+        """Refresh the messages display for selected room."""
+        self._messages_text.configure(state="normal")
+        self._messages_text.delete("1.0", "end")
+
         if not self._selected_room:
-            messagebox.showwarning("No Room", "Please select an agent/room first.")
+            self._messages_text.insert("end", "No room selected")
+            self._messages_text.configure(state="disabled")
             return
 
-        if not hasattr(self, '_right_clicked_agent') or not self._right_clicked_agent:
-            return
+        messages = self._room_service.get_room_messages(self._selected_room.id)
 
-        agent = self._right_clicked_agent
+        # Build lookup for reply references
+        msg_lookup = {msg.id: msg for msg in messages if msg.id}
 
-        # Can't remove the room owner from their own room
-        if agent.id == self._selected_room.id:
-            messagebox.showwarning("Cannot Remove", "Cannot remove the room owner from their own room.")
-            return
+        # Reaction emoji mapping
+        reaction_emoji = {
+            "thumbs_up": "👍",
+            "thumbs_down": "👎",
+            "brain": "🧠",
+            "heart": "❤️"
+        }
 
-        # Check if agent is in the room
-        room_agents = self._room_service.get_agents_in_room(self._selected_room.id)
-        if not any(a.id == agent.id for a in room_agents):
-            messagebox.showinfo("Not Member", f"Agent {agent.id} is not in this room.")
-            return
+        for msg in messages:
+            timestamp = msg.timestamp.strftime("%H:%M:%S")
 
-        self._room_service.leave_room(agent.id, self._selected_room.id)
-        self._update_room_status()
-        self._refresh_add_agent_combo()
-        self._status_var.set(f"Removed Agent {agent.id} from room {self._selected_room.id}")
+            # Get sender name
+            if msg.sender_name == "System":
+                sender_display = ""
+                content_prefix = f"[{timestamp}] "
+            elif msg.sender_name in ["The Architect", "User"]:
+                sender_display = msg.sender_name
+                content_prefix = f"[{timestamp}] {sender_display}: "
+            elif msg.sender_name.isdigit():
+                agent_id = int(msg.sender_name)
+                agent = self._database.get_agent(agent_id)
+                sender_display = f"{agent.name} (#{agent_id})" if agent and agent.name else f"Agent #{agent_id}"
+                content_prefix = f"[{timestamp}] {sender_display}: "
+            else:
+                sender_display = msg.sender_name
+                content_prefix = f"[{timestamp}] {sender_display}: "
 
-    def _open_settings(self) -> None:
-        """Open the settings dialog."""
-        dialog = SettingsDialog(
-            self._root,
-            self._openai,
-            on_connected=self._refresh_agent_list
-        )
+            # Show reply reference if this is a reply
+            if msg.reply_to_id and msg.reply_to_id in msg_lookup:
+                replied_msg = msg_lookup[msg.reply_to_id]
+                replied_sender = replied_msg.sender_name
+                if replied_sender.isdigit():
+                    replied_agent = self._database.get_agent(int(replied_sender))
+                    replied_sender = replied_agent.name if replied_agent and replied_agent.name else f"#{replied_sender}"
+                elif replied_sender in ["The Architect", "User"]:
+                    pass  # Keep as is
+                else:
+                    replied_sender = replied_sender[:20]
 
-    def _open_knowledge_explorer(self) -> None:
-        """Open the knowledge explorer for the selected agent."""
-        if not self._selected_agent:
-            messagebox.showwarning("No Agent", "Please select an agent first.")
-            return
+                preview = replied_msg.content[:40] + "..." if len(replied_msg.content) > 40 else replied_msg.content
+                self._messages_text.insert("end", f"  ↩ {replied_sender}: {preview}\n", "reply_ref")
 
-        dialog = KnowledgeExplorerDialog(
-            self._root,
-            self._selected_agent,
-            self._database
-        )
+            # Insert main message
+            if msg.sender_name == "System":
+                self._messages_text.insert("end", f"{content_prefix}{msg.content}")
+            else:
+                self._messages_text.insert("end", f"{content_prefix}{msg.content}")
 
-    def _open_hud_history(self) -> None:
-        """Open the HUD history viewer for the selected agent."""
-        if not self._selected_agent:
-            messagebox.showwarning("No Agent", "Please select an agent first.")
-            return
+            # Get and display reactions
+            if msg.id:
+                reactions = self._database.get_reactions_summary(msg.id)
+                if reactions:
+                    reaction_str = " "
+                    for reaction_type, count in reactions.items():
+                        emoji = reaction_emoji.get(reaction_type, "?")
+                        reaction_str += f"{emoji}{count} "
+                    self._messages_text.insert("end", reaction_str, "reactions")
 
-        dialog = HUDHistoryDialog(
-            self._root,
-            self._selected_agent,
-            self._heartbeat
-        )
+            self._messages_text.insert("end", "\n\n")
+
+        self._messages_text.configure(state="disabled")
+        self._messages_text.see("end")
+
+    def _on_messages_changed(self) -> None:
+        """Handle messages changed event."""
+        self._root.after(0, self._refresh_messages)
+
+    def _on_agent_status_changed(self, agent: AIAgent) -> None:
+        """Handle agent status change."""
+        self._root.after(0, self._refresh_agent_list)
+        self._root.after(0, self._update_room_status)
+        if self._selected_agent and agent.id == self._selected_agent.id:
+            self._root.after(0, lambda: self._update_selected_agent_status(agent))
+
+    def _update_selected_agent_status(self, agent: AIAgent) -> None:
+        """Update status display for selected agent."""
+        status = agent.status if agent.status else "idle"
+        status_text = {"idle": "● Idle", "thinking": "◐ Waiting...", "typing": "⌨ Typing...", "sending": "↑ Sending...", "sleeping": "💤 Sleeping"}.get(status, f"● {status}")
+        color = {"idle": "#7ee787", "thinking": "#ffa657", "typing": "#79c0ff", "sending": "#d2a8ff", "sleeping": "#8b8b8b"}.get(status, "#7ee787")
+        self._heartbeat_status_var.set(status_text)
+        self._heartbeat_status_label.configure(text_color=color)
+        self._agent_name_var.set(agent.name)
+
+    def _on_status_update(self, message: str) -> None:
+        """Handle status update."""
+        self._root.after(0, lambda: self._status_var.set(message))
+        if "is typing" in message:
+            self._root.after(0, lambda: self._typing_var.set(message))
+        elif "responded" in message or "thinking" in message:
+            self._root.after(0, lambda: self._typing_var.set(""))
 
     def _on_rooms_changed(self) -> None:
         """Handle rooms list change."""
@@ -635,169 +672,6 @@ class MainWindow:
         """Handle room membership change."""
         if self._selected_room and self._selected_room.id == room_id:
             self._root.after(0, self._update_room_status)
-
-    def _update_room_status(self) -> None:
-        """Update the room members display with editable controls."""
-        # Clear existing widgets
-        for widget in self._members_frame.winfo_children():
-            widget.destroy()
-        self._member_widgets = {}
-
-        if not self._selected_room:
-            ttk.Label(self._members_frame, text="No room selected").pack(anchor=tk.W)
-            return
-
-        # Get agents in this room
-        self._room_agents_list = self._room_service.get_agents_in_room(self._selected_room.id)
-
-        if not self._room_agents_list:
-            ttk.Label(self._members_frame, text="No agents in room").pack(anchor=tk.W)
-            return
-
-        # Sort agents so owner (admin) is first
-        owner_id = self._selected_room.id
-        sorted_agents = sorted(self._room_agents_list, key=lambda a: (0 if a.id == owner_id else 1, a.id))
-
-        for agent in sorted_agents:
-            # Create frame for each agent
-            agent_frame = ttk.Frame(self._members_frame)
-            agent_frame.pack(fill=tk.X, pady=(0, 5))
-
-            # Check if this is the room owner (admin)
-            is_owner = agent.id == owner_id
-
-            # Agent name and status - always show ID for identification
-            if agent.is_architect:
-                display = "The Architect"
-            elif is_owner:
-                name = agent.name or "Unnamed"
-                display = f"★ {name} (#{agent.id}) Admin"
-            else:
-                name = agent.name or "Unnamed"
-                display = f"  {name} (#{agent.id})"
-
-            # Owner gets gold color, others get blue
-            name_color = theme.OWNER_COLOR if is_owner else theme.MEMBER_COLOR
-            name_label = tk.Label(
-                agent_frame, text=display,
-                fg=name_color, bg=self._bg_dark,
-                font=("Consolas", 10, "bold")
-            )
-            name_label.pack(side=tk.LEFT)
-
-            # Status indicator
-            status = agent.status if agent.status else "idle"
-            status_label = tk.Label(
-                agent_frame, text=f" ● {status}",
-                fg=theme.STATUS_COLORS.get(status, self._fg_light), bg=self._bg_dark,
-                font=("Consolas", 9)
-            )
-            status_label.pack(side=tk.LEFT)
-
-            # Store widgets for status updates
-            self._member_widgets[agent.id] = {
-                'status_label': status_label
-            }
-
-    def _refresh_messages(self) -> None:
-        """Refresh the messages display for selected room."""
-        self._messages_text.config(state=tk.NORMAL)
-        self._messages_text.delete(1.0, tk.END)
-
-        if not self._selected_room:
-            self._messages_text.insert(tk.END, "No room selected", "system")
-            self._messages_text.config(state=tk.DISABLED)
-            return
-
-        messages = self._room_service.get_room_messages(self._selected_room.id)
-
-        for msg in messages:
-            timestamp = msg.timestamp.strftime("%H:%M:%S")
-
-            # Determine sender display name
-            # sender_name is now stored as ID for agents
-            if msg.sender_name == "System":
-                sender_display = None  # System messages don't show sender
-            elif msg.sender_name == "The Architect":
-                sender_display = "The Architect"
-            elif msg.sender_name == "User":
-                sender_display = "User"
-            elif msg.sender_name.isdigit():
-                # It's an agent ID - look up the agent's name
-                agent_id = int(msg.sender_name)
-                agent = self._database.get_agent(agent_id)
-                if agent and agent.name:
-                    sender_display = f"{agent.name} (#{agent_id})"
-                else:
-                    sender_display = f"Agent #{agent_id}"
-            else:
-                sender_display = msg.sender_name
-
-            # Determine tag based on message type
-            if msg.message_type == "system" or msg.message_type == "starter":
-                self._messages_text.insert(tk.END, f"[{timestamp}] ", "timestamp")
-                self._messages_text.insert(tk.END, f"{msg.content}\n\n", "system")
-            elif msg.sender_name == "The Architect" or msg.sender_name == "User":
-                self._messages_text.insert(tk.END, f"[{timestamp}] ", "timestamp")
-                self._messages_text.insert(tk.END, f"{sender_display}: ", "user")
-                self._messages_text.insert(tk.END, f"{msg.content}\n")
-                if msg.image_url:
-                    self._messages_text.insert(tk.END, f"[View Image]\n", "image_link")
-                self._messages_text.insert(tk.END, "\n")
-            else:
-                self._messages_text.insert(tk.END, f"[{timestamp}] ", "timestamp")
-                self._messages_text.insert(tk.END, f"{sender_display}: ", "agent")
-                self._messages_text.insert(tk.END, f"{msg.content}\n")
-                if msg.image_url:
-                    # Make image URL clickable
-                    self._messages_text.insert(tk.END, "[View Image]", "image_link")
-                    # Store URL for click handling
-                    self._messages_text.insert(tk.END, f" ({msg.image_url})\n")
-                self._messages_text.insert(tk.END, "\n")
-
-        self._messages_text.config(state=tk.DISABLED)
-        self._messages_text.see(tk.END)
-
-    def _on_messages_changed(self) -> None:
-        """Handle messages changed event."""
-        self._root.after(0, self._refresh_messages)
-
-    def _on_agent_status_changed(self, agent: AIAgent) -> None:
-        """Handle agent status change (including name changes)."""
-        self._root.after(0, self._refresh_agent_list)
-        self._root.after(0, self._update_room_status)
-        # Update heartbeat status if this is the selected agent
-        if self._selected_agent and agent.id == self._selected_agent.id:
-            self._root.after(0, lambda: self._update_heartbeat_status(agent))
-            # Also update the name field if it changed
-            self._root.after(0, lambda: self._agent_name_var.set(agent.name))
-
-    def _update_heartbeat_status(self, agent: AIAgent) -> None:
-        """Update the heartbeat status indicator for an agent."""
-        if not hasattr(self, '_heartbeat_status_var'):
-            return
-
-        status = agent.status if agent.status else "idle"
-        status_text = {
-            "idle": "● Idle",
-            "thinking": "◐ Waiting for API...",
-            "typing": "⌨ Typing...",
-            "sending": "↑ Sending..."
-        }.get(status, f"● {status}")
-        self._heartbeat_status_var.set(status_text)
-
-        if hasattr(self, '_heartbeat_status_label'):
-            self._heartbeat_status_label.configure(fg=theme.STATUS_COLORS.get(status, self._fg_light))
-
-    def _on_status_update(self, message: str) -> None:
-        """Handle status update."""
-        self._root.after(0, lambda: self._status_var.set(message))
-        # Update typing indicator
-        if "is typing" in message:
-            self._root.after(0, lambda: self._typing_var.set(message))
-        elif "responded" in message or "thinking" in message:
-            self._root.after(0, lambda: self._typing_var.set(""))
-
 
     def _load_api_key(self) -> None:
         """Load API key from keyring and auto-connect if found."""
@@ -810,7 +684,6 @@ class MainWindow:
             if api_key:
                 self._openai.set_api_key(api_key)
                 logger.info("API key loaded from keyring")
-                # Test connection
                 success, message = self._openai.test_connection()
                 logger.info(f"Connection test: {message}")
                 if success:
@@ -829,7 +702,6 @@ class MainWindow:
         if not message:
             return
 
-        # The user is The Architect
         self._room_service.send_message(self._selected_room.id, "The Architect", message)
         self._message_var.set("")
         self._refresh_messages()
@@ -838,15 +710,14 @@ class MainWindow:
         """Toggle heartbeat service."""
         if self._heartbeat.is_running:
             self._heartbeat.stop()
-            self._heartbeat_btn_text.set("Start Heartbeat")
+            self._heartbeat_btn_text.set("▶ Start")
         else:
             if not self._openai.has_api_key:
-                messagebox.showerror("Error", "Please connect to OpenAI first")
+                messagebox.showerror("Error", "Please connect to OpenAI first (File > Settings)")
                 return
 
-            # Interval is per-agent, WPM is per-room
             self._heartbeat.start()
-            self._heartbeat_btn_text.set("Stop Heartbeat")
+            self._heartbeat_btn_text.set("⏹ Stop")
 
     def _clear_chat(self) -> None:
         """Clear chat messages in selected room."""
@@ -854,16 +725,47 @@ class MainWindow:
             messagebox.showwarning("Warning", "Please select a room first")
             return
 
-        display_name = "The Architect" if self._selected_room.name == "The Architect" else f"Room {self._selected_room.id}"
-        if messagebox.askyesno("Confirm", f"Clear all messages in '{display_name}'?"):
+        if messagebox.askyesno("Confirm", f"Clear all messages in room {self._selected_room.id}?"):
             self._room_service.clear_room_messages(self._selected_room.id)
             self._refresh_messages()
-            self._status_var.set(f"Chat cleared in {display_name}")
+            self._status_var.set(f"Chat cleared")
+
+    def _open_settings(self) -> None:
+        """Open the settings dialog."""
+        dialog = SettingsDialog(self._root, self._openai, on_connected=self._refresh_agent_list)
+
+    def _open_prompt_editor(self) -> None:
+        """Open the prompt editor dialog."""
+        dialog = PromptEditorDialog(self._root)
+
+    def _open_knowledge_explorer(self) -> None:
+        """Open the knowledge explorer for the selected agent."""
+        if not self._selected_agent:
+            messagebox.showwarning("No Agent", "Please select an agent first.")
+            return
+        dialog = KnowledgeExplorerDialog(self._root, self._selected_agent, self._database)
+
+    def _open_hud_history(self) -> None:
+        """Open the HUD history viewer for the selected agent."""
+        if not self._selected_agent:
+            messagebox.showwarning("No Agent", "Please select an agent first.")
+            return
+        dialog = HUDHistoryDialog(self._root, self._selected_agent, self._heartbeat)
 
     def _on_close(self) -> None:
         """Handle window close."""
         logger.info("Application closing")
-        self._heartbeat.stop()
+
+        self._heartbeat.cleanup()
+        self._room_service.cleanup()
+
+        if hasattr(self._openai, '_client') and self._openai._client:
+            try:
+                self._openai._client.close()
+            except Exception as e:
+                logger.debug(f"Error closing OpenAI client: {e}")
+
+        logger.info("All services cleaned up")
         self._root.destroy()
 
     def run(self) -> None:

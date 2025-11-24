@@ -1121,29 +1121,38 @@ class HUDHistoryDialog(tk.Toplevel):
 
     def _setup_ui(self):
         """Set up the dialog UI."""
+        # Help text at top
+        help_frame = tk.Frame(self, bg=self._bg_dark)
+        help_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
+        help_text = "View what the agent sees (HUD) and their responses. Select entries on the left to browse history."
+        tk.Label(help_frame, text=help_text, bg=self._bg_dark, fg="#888888",
+                 font=("Segoe UI", 9), wraplength=900).pack(anchor=tk.W)
+
         # Top bar - navigation
         nav_frame = tk.Frame(self, bg=self._bg_dark)
-        nav_frame.pack(fill=tk.X, padx=10, pady=10)
+        nav_frame.pack(fill=tk.X, padx=10, pady=(5, 10))
 
         ttk.Button(nav_frame, text="◀ Prev", command=self._prev_entry).pack(side=tk.LEFT)
         ttk.Button(nav_frame, text="Next ▶", command=self._next_entry).pack(side=tk.LEFT, padx=(5, 0))
 
         self._nav_label = tk.Label(
             nav_frame, text="No history", bg=self._bg_dark, fg=self._fg_light,
-            font=("Consolas", 10)
+            font=("Segoe UI", 10)
         )
         self._nav_label.pack(side=tk.LEFT, padx=(15, 0))
 
-        ttk.Button(nav_frame, text="Refresh", command=self._load_history).pack(side=tk.RIGHT)
-        ttk.Button(nav_frame, text="Clear", command=self._clear_history).pack(side=tk.RIGHT, padx=(0, 5))
+        ttk.Button(nav_frame, text="🔄 Refresh", command=self._load_history).pack(side=tk.RIGHT)
+        ttk.Button(nav_frame, text="🗑 Clear", command=self._clear_history).pack(side=tk.RIGHT, padx=(0, 5))
 
         # Entry list on left
         list_frame = tk.Frame(self, bg=self._bg_dark, width=200)
         list_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(10, 0), pady=(0, 10))
         list_frame.pack_propagate(False)
 
-        tk.Label(list_frame, text="Entries", bg=self._bg_dark, fg=self._fg_light,
+        tk.Label(list_frame, text="📋 History", bg=self._bg_dark, fg=self._fg_light,
                  font=("Segoe UI", 10, "bold")).pack(anchor=tk.W)
+        tk.Label(list_frame, text="✓=Success ✗=Error", bg=self._bg_dark, fg="#666666",
+                 font=("Segoe UI", 8)).pack(anchor=tk.W)
 
         self._entry_listbox = tk.Listbox(
             list_frame, bg=self._bg_medium, fg=self._fg_light,
@@ -1161,7 +1170,8 @@ class HUDHistoryDialog(tk.Toplevel):
         content_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
         # HUD section
-        hud_frame = tk.LabelFrame(content_frame, text="HUD Sent", bg=self._bg_dark, fg=self._fg_light)
+        hud_frame = tk.LabelFrame(content_frame, text="📊 HUD Sent (What agent saw)", bg=self._bg_dark, fg=self._fg_light,
+                                   font=("Segoe UI", 9, "bold"))
         hud_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
 
         self._hud_text = tk.Text(
@@ -1177,7 +1187,8 @@ class HUDHistoryDialog(tk.Toplevel):
         self._hud_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # Response section
-        resp_frame = tk.LabelFrame(content_frame, text="Response", bg=self._bg_dark, fg=self._fg_light)
+        resp_frame = tk.LabelFrame(content_frame, text="💬 Agent Response (Messages + Actions)", bg=self._bg_dark, fg=self._fg_light,
+                                    font=("Segoe UI", 9, "bold"))
         resp_frame.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
 
         self._resp_text = tk.Text(

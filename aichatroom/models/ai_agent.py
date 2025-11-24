@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 
 
 @dataclass
@@ -30,11 +30,17 @@ class AIAgent:
     total_tokens_used: int = 0  # Token tracking
     next_heartbeat_offset: float = 0.0  # Staggered heartbeat timing
     self_concept_json: str = ""  # JSON storage for agent's self-managed identity
-    room_topic: str = ""  # Current topic for this agent's room (agent = room)
+    room_billboard: str = ""  # Billboard message for this agent's room (visible to all members)
     heartbeat_interval: float = 5.0  # Dynamic interval (1-10 seconds)
 
     # Room settings (agent = room owner)
     room_wpm: int = 80  # Words per minute for this room
+
+    # Permissions
+    can_create_agents: bool = False  # Can this agent create other agents?
+
+    # Sleep state
+    sleep_until: Optional[datetime] = None  # If set, agent is sleeping until this time
 
     def to_dict(self) -> dict:
         """Convert agent to dictionary for database storage."""
@@ -52,9 +58,11 @@ class AIAgent:
             'total_tokens_used': self.total_tokens_used,
             'next_heartbeat_offset': self.next_heartbeat_offset,
             'self_concept_json': self.self_concept_json,
-            'room_topic': self.room_topic,
+            'room_billboard': self.room_billboard,
             'heartbeat_interval': self.heartbeat_interval,
-            'room_wpm': self.room_wpm
+            'room_wpm': self.room_wpm,
+            'can_create_agents': self.can_create_agents,
+            'sleep_until': self.sleep_until.isoformat() if self.sleep_until else None
         }
 
     @classmethod
@@ -65,6 +73,12 @@ class AIAgent:
             created_at = datetime.fromisoformat(created_at)
         elif created_at is None:
             created_at = datetime.utcnow()
+
+        sleep_until = data.get('sleep_until')
+        if isinstance(sleep_until, str):
+            sleep_until = datetime.fromisoformat(sleep_until)
+        else:
+            sleep_until = None
 
         return cls(
             id=data.get('id'),
@@ -80,7 +94,9 @@ class AIAgent:
             total_tokens_used=int(data.get('total_tokens_used', 0)),
             next_heartbeat_offset=float(data.get('next_heartbeat_offset', 0.0)),
             self_concept_json=data.get('self_concept_json', ''),
-            room_topic=data.get('room_topic', ''),
+            room_billboard=data.get('room_billboard', ''),
             heartbeat_interval=float(data.get('heartbeat_interval', 5.0)),
-            room_wpm=int(data.get('room_wpm', 80))
+            room_wpm=int(data.get('room_wpm', 80)),
+            can_create_agents=bool(data.get('can_create_agents', False)),
+            sleep_until=sleep_until
         )

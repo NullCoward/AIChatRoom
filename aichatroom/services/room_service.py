@@ -399,3 +399,13 @@ class RoomService:
             self._database.save_membership(membership)
 
         logger.info(f"Cleared messages for room {room_id}")
+
+    def cleanup(self) -> None:
+        """Clean up all resources. Call this before destroying the service."""
+        # Clear all callbacks to prevent memory leaks
+        self._on_room_changed.clear()
+        self._on_membership_changed.clear()
+        self._on_messages_changed.clear()
+        self._on_agent_status_changed.clear()
+
+        logger.info("Room service cleaned up")

@@ -179,10 +179,12 @@ class DatabaseService:
             ("previous_response_id", "TEXT DEFAULT ''"),
             ("self_concept_json", "TEXT DEFAULT ''"),
             ("is_architect", "INTEGER DEFAULT 0"),
-            ("room_topic", "TEXT DEFAULT ''"),
+            ("room_billboard", "TEXT DEFAULT ''"),
             ("heartbeat_interval", "REAL DEFAULT 5.0"),
             ("room_wpm", "INTEGER DEFAULT 80"),
-            ("agent_type", "TEXT DEFAULT 'persona'")
+            ("agent_type", "TEXT DEFAULT 'persona'"),
+            ("can_create_agents", "INTEGER DEFAULT 0"),
+            ("sleep_until", "TEXT DEFAULT NULL")
         ]
 
         for col_name, col_def in new_agent_columns:
@@ -213,7 +215,8 @@ class DatabaseService:
             ("message_type", "TEXT DEFAULT 'text'"),
             ("image_url", "TEXT"),
             ("image_path", "TEXT"),
-            ("room_id", "INTEGER DEFAULT 0")
+            ("room_id", "INTEGER DEFAULT 0"),
+            ("reply_to_id", "INTEGER DEFAULT NULL")
         ]
 
         for col_name, col_def in new_message_columns:
@@ -253,9 +256,9 @@ class DatabaseService:
                     INSERT INTO agents (name, background_prompt, previous_response_id,
                                        created_at, agent_type, model, temperature, is_architect,
                                        status, total_tokens_used, next_heartbeat_offset,
-                                       self_concept_json, room_topic, heartbeat_interval,
-                                       room_wpm)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       self_concept_json, room_billboard, heartbeat_interval,
+                                       room_wpm, can_create_agents, sleep_until)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     agent.name,
                     agent.background_prompt,
@@ -269,9 +272,11 @@ class DatabaseService:
                     agent.total_tokens_used,
                     agent.next_heartbeat_offset,
                     agent.self_concept_json,
-                    agent.room_topic,
+                    agent.room_billboard,
                     agent.heartbeat_interval,
-                    agent.room_wpm
+                    agent.room_wpm,
+                    int(agent.can_create_agents),
+                    agent.sleep_until.isoformat() if agent.sleep_until else None
                 ))
                 agent.id = cursor.lastrowid
                 logger.info(f"Created {agent.agent_type} '{agent.name}' with ID {agent.id}")
@@ -283,8 +288,8 @@ class DatabaseService:
                                      model = ?, temperature = ?, is_architect = ?,
                                      status = ?, total_tokens_used = ?,
                                      next_heartbeat_offset = ?, self_concept_json = ?,
-                                     room_topic = ?, heartbeat_interval = ?,
-                                     room_wpm = ?
+                                     room_billboard = ?, heartbeat_interval = ?,
+                                     room_wpm = ?, can_create_agents = ?, sleep_until = ?
                     WHERE id = ?
                 ''', (
                     agent.name,
@@ -298,9 +303,11 @@ class DatabaseService:
                     agent.total_tokens_used,
                     agent.next_heartbeat_offset,
                     agent.self_concept_json,
-                    agent.room_topic,
+                    agent.room_billboard,
                     agent.heartbeat_interval,
                     agent.room_wpm,
+                    int(agent.can_create_agents),
+                    agent.sleep_until.isoformat() if agent.sleep_until else None,
                     agent.id
                 ))
                 logger.debug(f"Updated {agent.agent_type} '{agent.name}' (ID {agent.id})")
@@ -372,8 +379,8 @@ class DatabaseService:
             if message.id is None:
                 cursor.execute('''
                     INSERT INTO messages (room_id, sender_name, content, timestamp, sequence_number,
-                                         message_type, image_url, image_path)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                         message_type, image_url, image_path, reply_to_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     message.room_id,
                     message.sender_name,
@@ -382,7 +389,8 @@ class DatabaseService:
                     message.sequence_number,
                     message.message_type,
                     message.image_url,
-                    message.image_path
+                    message.image_path,
+                    message.reply_to_id
                 ))
                 message.id = cursor.lastrowid
                 logger.debug(f"Saved message from '{message.sender_name}' in room {message.room_id}")
@@ -390,7 +398,7 @@ class DatabaseService:
                 cursor.execute('''
                     UPDATE messages SET room_id = ?, sender_name = ?, content = ?,
                                        timestamp = ?, sequence_number = ?,
-                                       message_type = ?, image_url = ?, image_path = ?
+                                       message_type = ?, image_url = ?, image_path = ?, reply_to_id = ?
                     WHERE id = ?
                 ''', (
                     message.room_id,
@@ -401,6 +409,7 @@ class DatabaseService:
                     message.message_type,
                     message.image_url,
                     message.image_path,
+                    message.reply_to_id,
                     message.id
                 ))
 

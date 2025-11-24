@@ -158,16 +158,24 @@ class HeartbeatService:
         self._notify_status("Heartbeat started")
         logger.info(f"Heartbeat started with {self._base_interval}s base interval")
 
-    def stop(self) -> None:
-        """Stop the heartbeat service (non-blocking)."""
+    def stop(self, timeout: float = 2.0) -> None:
+        """Stop the heartbeat service.
+
+        Args:
+            timeout: Maximum seconds to wait for thread to stop (default 2.0)
+        """
         if not self._is_running:
             return
 
         self._stop_event.set()
         self._is_running = False
 
-        # Don't block UI - thread is daemon so it will stop
-        # Just clear the reference
+        # Wait for thread to finish (with timeout to avoid blocking UI too long)
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                logger.warning("Heartbeat thread did not stop within timeout")
+
         self._thread = None
 
         # Clear active agents
@@ -176,6 +184,20 @@ class HeartbeatService:
 
         self._notify_status("Heartbeat stopped")
         logger.info("Heartbeat stopped")
+
+    def cleanup(self) -> None:
+        """Clean up all resources. Call this before destroying the service."""
+        self.stop()
+
+        # Clear all callbacks to prevent memory leaks
+        self._on_status_update.clear()
+        self._on_error.clear()
+
+        # Clear HUD history
+        with self._hud_history_lock:
+            self._hud_history.clear()
+
+        logger.info("Heartbeat service cleaned up")
 
     def _get_randomized_interval(self) -> float:
         """Get a randomized interval around the base."""
@@ -274,6 +296,21 @@ class HeartbeatService:
             if fresh_agent:
                 agent = fresh_agent
 
+            # Check if agent is sleeping
+            if agent.sleep_until:
+                current_time = datetime.utcnow()
+                if current_time < agent.sleep_until:
+                    # Still sleeping, skip this agent
+                    logger.debug(f"Agent '{agent.name}' is sleeping until {agent.sleep_until.isoformat()}")
+                    return
+                else:
+                    # Wake up the agent
+                    agent.sleep_until = None
+                    agent.status = "idle"
+                    self._database.save_agent(agent)
+                    logger.info(f"Agent '{agent.name}' woke up from sleep")
+                    self._room_service.notify_agent_status_changed(agent)
+
             # Get all room memberships for this agent
             memberships = self._database.get_agent_memberships(agent.id)
             if not memberships:
@@ -347,7 +384,7 @@ class HeartbeatService:
                     'word_budget': word_budget,
                     'room_keys': room_keys,
                     'pending_requests': pending_requests,
-                    'topic': room_agent.room_topic,  # Topic for this room
+                    'billboard': room_agent.room_billboard,  # Billboard for this room
                     'reactions_map': reactions_map,  # Reactions for messages
                     'room_wpm': room_agent.room_wpm  # Room's WPM setting
                 })
@@ -388,6 +425,14 @@ class HeartbeatService:
 
             # Parse multi-room response
             room_responses, actions = self._hud.parse_response(response)
+
+            # Log what we parsed
+            logger.info(f"Agent {agent.id} response parsed: {len(room_responses)} messages, {len(actions)} actions")
+            if room_responses:
+                for resp in room_responses:
+                    logger.info(f"  Room {resp.get('room_id')}: {resp.get('message', '')[:50]}...")
+            else:
+                logger.info(f"  No messages in response")
 
             # Store HUD and response in history
             self._store_hud_history(agent.id, hud_json, hud_tokens, response, None)
@@ -585,16 +630,51 @@ class HeartbeatService:
                 self._process_room_action(agent, action)
             delattr(agent, '_pending_room_actions')
 
-        # Process topic actions
-        if hasattr(agent, '_pending_topic_action'):
-            self._process_topic_action(agent, agent._pending_topic_action)
-            delattr(agent, '_pending_topic_action')
+        # Process billboard actions
+        if hasattr(agent, '_pending_billboard_action'):
+            self._process_billboard_action(agent, agent._pending_billboard_action)
+            delattr(agent, '_pending_billboard_action')
+
+        # Process wake agent actions
+        if hasattr(agent, '_pending_wake_agents'):
+            for target_id in agent._pending_wake_agents:
+                self._process_wake_agent(agent, target_id)
+            delattr(agent, '_pending_wake_agents')
+
+        # Process replies (handled separately from regular responses)
+        if hasattr(agent, '_pending_replies'):
+            for reply in agent._pending_replies:
+                self._process_reply(agent, reply)
+            delattr(agent, '_pending_replies')
 
         # Process reactions
         if hasattr(agent, '_pending_reactions'):
             for reaction in agent._pending_reactions:
                 self._process_reaction(agent, reaction)
             delattr(agent, '_pending_reactions')
+
+        # Process agent creation
+        if hasattr(agent, '_pending_create_agents'):
+            for create_data in agent._pending_create_agents:
+                self._process_create_agent(agent, create_data)
+            delattr(agent, '_pending_create_agents')
+
+        # Process agent alterations
+        if hasattr(agent, '_pending_alter_agents'):
+            for alter_data in agent._pending_alter_agents:
+                self._process_alter_agent(agent, alter_data)
+            delattr(agent, '_pending_alter_agents')
+
+        # Process agent retirements
+        if hasattr(agent, '_pending_retire_agents'):
+            for target_id in agent._pending_retire_agents:
+                self._process_retire_agent(agent, target_id)
+            delattr(agent, '_pending_retire_agents')
+
+        # Process sleep
+        if hasattr(agent, '_pending_sleep'):
+            self._process_sleep(agent, agent._pending_sleep)
+            delattr(agent, '_pending_sleep')
 
     def _process_attention_change(self, agent: AIAgent, change: dict) -> None:
         """Process an attention percentage change for a room."""
@@ -622,6 +702,9 @@ class HeartbeatService:
 
         self._database.save_membership(membership)
         logger.info(f"Agent {agent.id} set attention for room {room_id} to {value}")
+
+        # Notify so changes are visible immediately
+        self._room_service.notify_membership_changed(room_id)
 
     def _process_key_action(self, agent: AIAgent, action: dict) -> None:
         """Process a key create/revoke action."""
@@ -728,20 +811,97 @@ class HeartbeatService:
                 self._room_service.leave_room(agent.id, room_id)
                 logger.info(f"Agent {agent.id} left room {room_id}")
 
-    def _process_topic_action(self, agent: AIAgent, action: dict) -> None:
-        """Process a topic set/clear action for the agent's room."""
+    def _process_billboard_action(self, agent: AIAgent, action: dict) -> None:
+        """Process a billboard set/clear action for the agent's room."""
         action_type = action.get('action')
 
         if action_type == 'set':
-            topic = action.get('topic', '')
-            agent.room_topic = topic
+            message = action.get('message', '')
+            agent.room_billboard = message
             self._database.save_agent(agent)
-            logger.info(f"Agent {agent.id} set topic: {topic}")
+            logger.info(f"Agent {agent.id} set billboard: {message[:50]}...")
+            # Notify so billboard change is visible immediately
+            self._room_service.notify_agent_status_changed(agent)
 
         elif action_type == 'clear':
-            agent.room_topic = ''
+            agent.room_billboard = ''
             self._database.save_agent(agent)
-            logger.info(f"Agent {agent.id} cleared topic")
+            logger.info(f"Agent {agent.id} cleared billboard")
+            # Notify so billboard change is visible immediately
+            self._room_service.notify_agent_status_changed(agent)
+
+    def _process_wake_agent(self, agent: AIAgent, target_id: int) -> None:
+        """Process wake agent action - requires room proximity."""
+        try:
+            # Check room proximity - must share at least one room
+            agent_rooms = {m.room_id for m in self._database.get_agent_memberships(agent.id)}
+            target_rooms = {m.room_id for m in self._database.get_agent_memberships(target_id)}
+
+            if not agent_rooms.intersection(target_rooms):
+                logger.warning(f"Agent {agent.id} tried to wake agent {target_id} but they share no rooms")
+                return
+
+            # Get and wake the target agent
+            target_agent = self._database.get_agent(target_id)
+            if not target_agent:
+                logger.warning(f"Agent {agent.id} tried to wake non-existent agent {target_id}")
+                return
+
+            if not target_agent.sleep_until:
+                logger.warning(f"Agent {agent.id} tried to wake agent {target_id} but they're not sleeping")
+                return
+
+            # Wake the agent
+            target_agent.sleep_until = None
+            target_agent.status = "idle"
+            self._database.save_agent(target_agent)
+            logger.info(f"Agent {agent.id} woke up agent {target_id}")
+
+            # Notify UI
+            self._room_service.notify_agent_status_changed(target_agent)
+
+        except Exception as e:
+            logger.error(f"Failed to wake agent {target_id}: {e}")
+
+    def _process_reply(self, agent: AIAgent, reply_data: dict) -> None:
+        """Process a reply message."""
+        room_id = reply_data.get('room_id')
+        reply_to_id = reply_data.get('reply_to_id')
+        message = reply_data.get('message', '')
+
+        try:
+            # Verify agent is in the room
+            membership = self._database.get_membership(agent.id, room_id)
+            if not membership:
+                logger.warning(f"Agent {agent.id} tried to reply in room {room_id} but not a member")
+                return
+
+            # Save the reply message
+            seq_num = self._database.get_next_sequence_number()
+            msg = ChatMessage(
+                room_id=room_id,
+                sender_name=str(agent.id),
+                content=message,
+                timestamp=datetime.utcnow(),
+                sequence_number=seq_num,
+                message_type="text",
+                reply_to_id=reply_to_id
+            )
+            self._database.save_message(msg)
+
+            # Update membership
+            membership.last_message_id = str(seq_num)
+            membership.last_response_time = datetime.utcnow()
+            membership.last_response_word_count = len(message.split())
+            self._database.save_membership(membership)
+
+            # Notify message change
+            self._room_service.notify_messages_changed()
+
+            logger.info(f"Agent {agent.id} replied to message {reply_to_id} in room {room_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to process reply: {e}")
 
     def _send_access_request_notification(self, requester_id: int, room_id: int, request_id: int, key_value: str) -> None:
         """Send a system message to the room owner about an access request."""
@@ -757,6 +917,122 @@ class HeartbeatService:
         )
         self._database.save_message(msg)
         logger.info(f"Sent access request notification to room {room_id}")
+
+        # Notify so the system message is visible immediately
+        self._room_service.notify_messages_changed()
+
+    def _process_create_agent(self, agent: AIAgent, create_data: dict) -> None:
+        """Process agent creation action."""
+        name = create_data.get('name', 'New Agent')
+        background_prompt = create_data.get('background_prompt', 'You are a helpful assistant.')
+        agent_type = create_data.get('agent_type', 'persona')
+        in_room_id = create_data.get('in_room_id')
+
+        try:
+            # Create the new agent using room_service
+            new_agent = self._room_service.create_agent(
+                name=name,
+                background_prompt=background_prompt,
+                in_room_id=in_room_id,
+                model="gpt-4o-mini",  # Default model
+                agent_type=agent_type
+            )
+
+            logger.info(f"Agent {agent.id} created new agent '{name}' (ID {new_agent.id})")
+
+            # Notify UI of the new agent
+            self._room_service._notify_room_changed()
+
+        except Exception as e:
+            logger.error(f"Failed to create agent: {e}")
+
+    def _process_alter_agent(self, agent: AIAgent, alter_data: dict) -> None:
+        """Process agent alteration action - requires room proximity."""
+        target_id = alter_data.get('target_id')
+        new_name = alter_data.get('name')
+        new_prompt = alter_data.get('background_prompt')
+        new_model = alter_data.get('model')
+
+        try:
+            # Check room proximity - must share at least one room
+            agent_rooms = {m.room_id for m in self._database.get_agent_memberships(agent.id)}
+            target_rooms = {m.room_id for m in self._database.get_agent_memberships(target_id)}
+
+            if not agent_rooms.intersection(target_rooms):
+                logger.warning(f"Agent {agent.id} tried to alter agent {target_id} but they share no rooms")
+                return
+
+            # Get the target agent
+            target_agent = self._database.get_agent(target_id)
+            if not target_agent:
+                logger.warning(f"Agent {agent.id} tried to alter non-existent agent {target_id}")
+                return
+
+            # Apply changes
+            if new_name:
+                old_name = target_agent.name
+                target_agent.name = new_name
+                logger.info(f"Agent {agent.id} renamed agent {target_id} from '{old_name}' to '{new_name}'")
+
+            if new_prompt:
+                target_agent.background_prompt = new_prompt
+                logger.info(f"Agent {agent.id} altered agent {target_id}'s background prompt")
+
+            if new_model:
+                old_model = target_agent.model
+                target_agent.model = new_model
+                logger.info(f"Agent {agent.id} changed agent {target_id}'s model from '{old_model}' to '{new_model}'")
+
+            # Save the target agent
+            self._database.save_agent(target_agent)
+
+            # Notify UI of changes
+            self._room_service.notify_agent_status_changed(target_agent)
+            self._room_service._notify_room_changed()
+
+        except Exception as e:
+            logger.error(f"Failed to alter agent {target_id}: {e}")
+
+    def _process_retire_agent(self, agent: AIAgent, target_id: int) -> None:
+        """Process retire agent action - requires room proximity."""
+        try:
+            # Check room proximity - must share at least one room
+            agent_rooms = {m.room_id for m in self._database.get_agent_memberships(agent.id)}
+            target_rooms = {m.room_id for m in self._database.get_agent_memberships(target_id)}
+
+            if not agent_rooms.intersection(target_rooms):
+                logger.warning(f"Agent {agent.id} tried to retire agent {target_id} but they share no rooms")
+                return
+
+            # Get the target agent
+            target_agent = self._database.get_agent(target_id)
+            if not target_agent:
+                logger.warning(f"Agent {agent.id} tried to retire non-existent agent {target_id}")
+                return
+
+            # Delete the agent and their room
+            self._database.delete_agent(target_id)
+            logger.info(f"Agent {agent.id} retired agent {target_id} ('{target_agent.name}')")
+
+            # Notify UI
+            self._room_service._notify_room_changed()
+
+        except Exception as e:
+            logger.error(f"Failed to retire agent {target_id}: {e}")
+
+    def _process_sleep(self, agent: AIAgent, sleep_until: datetime) -> None:
+        """Process sleep action - set agent to sleep until specified time."""
+        try:
+            agent.sleep_until = sleep_until
+            agent.status = "sleeping"
+            self._database.save_agent(agent)
+            logger.info(f"Agent {agent.id} is now sleeping until {sleep_until.isoformat()}")
+
+            # Notify UI
+            self._room_service.notify_agent_status_changed(agent)
+
+        except Exception as e:
+            logger.error(f"Failed to set agent {agent.id} to sleep: {e}")
 
     def _process_reaction(self, agent: AIAgent, reaction: dict) -> None:
         """Process a reaction to a message and adjust heartbeat of message sender."""
@@ -805,6 +1081,9 @@ class HeartbeatService:
         if sender.heartbeat_interval != old_interval:
             self._database.save_agent(sender)
             logger.info(f"Agent {sender_id} heartbeat adjusted from {old_interval}s to {sender.heartbeat_interval}s due to {reaction_type}")
+
+        # Notify so reaction and any status changes are visible
+        self._room_service.notify_messages_changed()
 
     def _apply_heartbeat_decay(self, agent: AIAgent) -> None:
         """Apply natural decay toward 10s heartbeat interval."""

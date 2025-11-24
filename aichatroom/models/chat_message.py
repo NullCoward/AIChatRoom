@@ -20,6 +20,7 @@ class ChatMessage:
     message_type: str = "text"  # text, image, system (join/leave), starter
     image_url: Optional[str] = None  # For DALL-E generated images
     image_path: Optional[str] = None  # Local path if saved
+    reply_to_id: Optional[int] = None  # ID of message being replied to
 
     def to_dict(self) -> dict:
         """Convert message to dictionary for database storage."""
@@ -32,7 +33,8 @@ class ChatMessage:
             'sequence_number': self.sequence_number,
             'message_type': self.message_type,
             'image_url': self.image_url,
-            'image_path': self.image_path
+            'image_path': self.image_path,
+            'reply_to_id': self.reply_to_id
         }
 
     @classmethod
@@ -53,7 +55,8 @@ class ChatMessage:
             sequence_number=data.get('sequence_number', 0),
             message_type=data.get('message_type', 'text'),
             image_url=data.get('image_url'),
-            image_path=data.get('image_path')
+            image_path=data.get('image_path'),
+            reply_to_id=data.get('reply_to_id')
         )
 
     @property

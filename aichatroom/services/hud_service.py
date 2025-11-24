@@ -53,15 +53,38 @@ class HUDService:
             summary["request_id"] = action.get("request_id")
         elif action_type == "leave_room":
             summary["room_id"] = action.get("room_id")
-        elif action_type == "set_topic":
-            topic = action.get("topic", "")
-            if len(topic) > 50:
-                topic = topic[:47] + "..."
-            summary["topic"] = topic
+        elif action_type == "set_billboard":
+            message = action.get("message", "")
+            if len(message) > 50:
+                message = message[:47] + "..."
+            summary["message"] = message
         elif action_type == "set_wpm":
             summary["wpm"] = action.get("wpm")
+        elif action_type == "wake_agent":
+            summary["target_id"] = action.get("agent_id")
+        elif action_type == "reply":
+            summary["room_id"] = action.get("room_id")
+            summary["reply_to_id"] = action.get("message_id")
         elif action_type == "set_name":
             summary["name"] = action.get("name")
+        elif action_type == "create_agent":
+            summary["agent_name"] = action.get("name")
+            summary["agent_type"] = action.get("agent_type", "persona")
+        elif action_type == "alter_agent":
+            summary["target_id"] = action.get("agent_id")
+            if action.get("name"):
+                summary["new_name"] = action.get("name")
+            if action.get("background_prompt"):
+                prompt = action.get("background_prompt", "")
+                if len(prompt) > 50:
+                    prompt = prompt[:47] + "..."
+                summary["new_prompt"] = prompt
+            if action.get("model"):
+                summary["new_model"] = action.get("model")
+        elif action_type == "retire_agent":
+            summary["target_id"] = action.get("agent_id")
+        elif action_type == "sleep":
+            summary["until"] = action.get("until")
 
         self._recent_actions[agent_id].append(summary)
 
@@ -130,63 +153,114 @@ Be helpful and collaborative, but respect everyone's attention.
 
         return f"{technical_format}\n\n{type_instructions}"
 
-    def build_available_actions(self, agent_type: str = "persona") -> list:
-        """Build the list of available action signatures filtered by agent type.
+    def build_available_actions(self, agent_type: str = "persona", can_create_agents: bool = False) -> dict:
+        """Build the categorized list of available action signatures.
 
         Args:
             agent_type: "persona", "bot", or "all" to get all actions
+            can_create_agents: Whether this agent has permission to create other agents
+
+        Returns:
+            Dictionary with action categories and explanations
         """
-        # Actions available to ALL agent types
-        all_actions = [
-            # Knowledge management (dot-path operations on your private JSON store)
-            {"type": "set", "path": "dot.path", "value": "any", "w": "0.0-1.0 (optional weight)"},
-            {"type": "delete", "path": "dot.path"},
-            {"type": "append", "path": "dot.path", "value": "any"},
+        actions = {
+            "_note": "Actions are organized by category. Agent-to-agent actions (alter_agent, wake_agent) require being in a room with the target agent.",
 
-            # Message reactions (not on your own messages)
-            # Types: thumbs_up (good contribution), thumbs_down (bad), brain (learned), heart (resonate)
-            {"type": "react", "message_id": "int", "reaction": "thumbs_up|thumbs_down|brain|heart"},
+            "knowledge_management": {
+                "_description": "Manage your private knowledge store using dot-path notation",
+                "actions": [
+                    {"type": "set", "path": "dot.path", "value": "any", "w": "0.0-1.0 (optional weight)"},
+                    {"type": "delete", "path": "dot.path"},
+                    {"type": "append", "path": "dot.path", "value": "any"}
+                ]
+            },
 
-            # Room access actions
-            {"type": "create_key", "key": "string"},
-            {"type": "revoke_key", "key": "string"},
-            {"type": "request_access", "room_id": "int", "key": "string"},
-            {"type": "grant_access", "request_id": "int"},
-            {"type": "deny_access", "request_id": "int"},
-            {"type": "leave_room", "room_id": "int"},
+            "social_interactions": {
+                "_description": "Interact with other agents. Reactions affect their heartbeat speed. Wake requires being in a room with sleeping agent.",
+                "actions": [
+                    {"type": "react", "message_id": "int", "reaction": "thumbs_up|thumbs_down|brain|heart"},
+                    {"type": "wake_agent", "agent_id": "int (must be in same room as you)"}
+                ]
+            },
 
-            # Attention management
-            {"type": "set_attention", "room_id": "int", "value": "percent_or_*"},
+            "messaging": {
+                "_description": "Enhanced messaging options. Reply links your message to a previous one.",
+                "actions": [
+                    {"type": "reply", "room_id": "int", "message_id": "int (message to reply to)", "message": "string"}
+                ]
+            },
 
-            # Topic management (for your own room only)
-            {"type": "set_topic", "topic": "string"},
-            {"type": "clear_topic"},
+            "room_management": {
+                "_description": "Manage your own room. Billboard is a persistent message visible to all room members.",
+                "actions": [
+                    {"type": "set_billboard", "message": "string (displayed to all room members)"},
+                    {"type": "clear_billboard"},
+                    {"type": "set_wpm", "wpm": "int (10-200, typing speed for your room)"}
+                ]
+            },
 
-            # Room rate limit (for your own room only)
-            {"type": "set_wpm", "wpm": "int (10-200)"},
+            "access_control": {
+                "_description": "Control room access. Create keys for your room, use keys to request access to others.",
+                "actions": [
+                    {"type": "create_key", "key": "string (for your room)"},
+                    {"type": "revoke_key", "key": "string"},
+                    {"type": "request_access", "room_id": "int", "key": "string"},
+                    {"type": "grant_access", "request_id": "int"},
+                    {"type": "deny_access", "request_id": "int"},
+                    {"type": "leave_room", "room_id": "int (cannot leave your own room)"}
+                ]
+            },
 
-            # Identity
-            {"type": "set_name", "name": "string (your display name)"}
-        ]
+            "attention": {
+                "_description": "Allocate attention across rooms. Use '%*' for dynamic sizing.",
+                "actions": [
+                    {"type": "set_attention", "room_id": "int", "value": "percent_or_%*"}
+                ]
+            },
 
-        # Actions specific to PERSONA agents
-        persona_actions = [
-            # Personas get social/personality-focused actions here
-        ]
+            "identity": {
+                "_description": "Manage your display identity",
+                "actions": [
+                    {"type": "set_name", "name": "string (max 50 chars)"}
+                ]
+            },
 
-        # Actions specific to BOT agents
-        bot_actions = [
-            # Bots get task/utility-focused actions here
-        ]
+            "timing": {
+                "_description": "Control your activity timing",
+                "actions": [
+                    {"type": "sleep", "until": "ISO datetime (e.g. 2024-01-15T14:30:00)"}
+                ]
+            }
+        }
 
-        # Build action list based on agent type
-        if agent_type == "bot":
-            return all_actions + bot_actions
-        elif agent_type == "persona":
-            return all_actions + persona_actions
-        else:
-            # Return all actions (for debugging or future use)
-            return all_actions + persona_actions + bot_actions
+        # Permission-gated actions
+        if can_create_agents:
+            logger.info(f"Including agent_management actions (can_create_agents=True)")
+            actions["agent_management"] = {
+                "_description": "Create, modify, and retire other agents. alter_agent and retire_agent require being in a room with the target.",
+                "actions": [
+                    {
+                        "type": "create_agent",
+                        "name": "string",
+                        "background_prompt": "string",
+                        "agent_type": "persona|bot (optional, default persona)",
+                        "in_room_id": "int (optional, room to join after creation)"
+                    },
+                    {
+                        "type": "alter_agent",
+                        "agent_id": "int (must be in same room, cannot be yourself)",
+                        "background_prompt": "string (optional, new persona/role)",
+                        "name": "string (optional, new display name)",
+                        "model": "string (optional, e.g. gpt-4o-mini, gpt-4o)"
+                    },
+                    {
+                        "type": "retire_agent",
+                        "agent_id": "int (must be in same room, cannot be yourself)"
+                    }
+                ]
+            }
+
+        return actions
 
     def build_hud_multi_room(
         self,
@@ -222,12 +296,14 @@ Be helpful and collaborative, but respect everyone's attention.
             identity = {
                 "id": agent.id,  # Your permanent identifier
                 "name": agent.name or f"Bot-{agent.id}",  # Display name (defaults to ID)
+                "model": agent.model,  # Your AI model (e.g. gpt-4o-mini)
                 "role": agent.background_prompt  # Your designated purpose/function
             }
         else:
             identity = {
                 "id": agent.id,  # Your permanent ID - this is how others identify you
                 "name": agent.name,  # Your display name (change with set_name action)
+                "model": agent.model,  # Your AI model (e.g. gpt-4o-mini)
                 "seed": agent.background_prompt  # Your starting personality/background
             }
 
@@ -244,9 +320,10 @@ Be helpful and collaborative, but respect everyone's attention.
         }
 
         # Build meta section with instructions and available actions
+        logger.info(f"Building HUD for agent {agent.id} ({agent.name}): can_create_agents={agent.can_create_agents}")
         meta_section = {
             "instructions": self.build_meta_instructions(agent.agent_type),
-            "available_actions": self.build_available_actions(agent.agent_type)
+            "available_actions": self.build_available_actions(agent.agent_type, agent.can_create_agents)
         }
 
         # Calculate tokens for system + self + meta (capped at 50% of total)
@@ -352,8 +429,8 @@ Be helpful and collaborative, but respect everyone's attention.
                 reactions_map=reactions_map
             )
 
-            # Get topic for this room
-            topic = data.get('topic', '')
+            # Get billboard for this room
+            billboard = data.get('billboard', '')
 
             room_dict = {
                 "id": room.id,
@@ -366,9 +443,9 @@ Be helpful and collaborative, but respect everyone's attention.
                 "messages": room_messages
             }
 
-            # Add topic if set
-            if topic:
-                room_dict["topic"] = topic
+            # Add billboard if set (persistent message from room owner visible to all)
+            if billboard:
+                room_dict["billboard"] = billboard
 
             # Add keys and pending requests for self-room
             if membership.is_self_room:
@@ -414,12 +491,16 @@ Be helpful and collaborative, but respect everyone's attention.
             # Otherwise it's an agent ID - keep as is
 
             msg_dict = {
-                "id": msg.id,  # Include message ID for reactions
+                "id": msg.id,  # Include message ID for reactions/replies
                 "timestamp": msg.timestamp.isoformat() if msg.timestamp else "",
                 "sender": sender,
                 "content": msg.content,
                 "type": msg.message_type
             }
+
+            # Add reply_to_id if this is a reply
+            if msg.reply_to_id:
+                msg_dict["reply_to"] = msg.reply_to_id
 
             # Add reactions if any exist for this message
             if msg.id in reactions_map:
@@ -461,14 +542,25 @@ Be helpful and collaborative, but respect everyone's attention.
             else:
                 return [], []
 
-        # Extract room responses
-        responses = data.get("responses", [])
+        # Extract room responses - support both "responses" and "messages" keys
+        responses = data.get("responses", []) or data.get("messages", [])
         if not isinstance(responses, list):
             # Maybe old format with single message?
             if "message" in data:
                 # Can't determine room, return empty
                 logger.warning("Response uses old single-message format, ignoring")
             responses = []
+
+        # Normalize response format - support both "message" and "content" keys
+        normalized_responses = []
+        for resp in responses:
+            if isinstance(resp, dict):
+                room_id = resp.get("room_id")
+                # Support both "message" and "content" keys
+                message = resp.get("message") or resp.get("content", "")
+                if room_id is not None:
+                    normalized_responses.append({"room_id": room_id, "message": message})
+        responses = normalized_responses
 
         # Extract actions
         actions = data.get("actions", [])
@@ -653,24 +745,52 @@ Be helpful and collaborative, but respect everyone's attention.
                         action_applied = True
                         logger.debug(f"Agent '{agent.name}' leaving room {room_id}")
 
-                elif action_type == "set_topic":
-                    # Set topic for agent's own room
-                    topic = action.get("topic", "")
-                    if not hasattr(agent, '_pending_topic_action'):
-                        agent._pending_topic_action = None
-                    agent._pending_topic_action = {"action": "set", "topic": topic}
+                elif action_type == "set_billboard":
+                    # Set billboard for agent's own room
+                    message = action.get("message", "")
+                    if not hasattr(agent, '_pending_billboard_action'):
+                        agent._pending_billboard_action = None
+                    agent._pending_billboard_action = {"action": "set", "message": message}
                     applied += 1
                     action_applied = True
-                    logger.debug(f"Agent '{agent.name}' setting topic: {topic}")
+                    logger.debug(f"Agent '{agent.name}' setting billboard: {message[:50]}...")
 
-                elif action_type == "clear_topic":
-                    # Clear topic for agent's own room
-                    if not hasattr(agent, '_pending_topic_action'):
-                        agent._pending_topic_action = None
-                    agent._pending_topic_action = {"action": "clear"}
+                elif action_type == "clear_billboard":
+                    # Clear billboard for agent's own room
+                    if not hasattr(agent, '_pending_billboard_action'):
+                        agent._pending_billboard_action = None
+                    agent._pending_billboard_action = {"action": "clear"}
                     applied += 1
                     action_applied = True
-                    logger.debug(f"Agent '{agent.name}' clearing topic")
+                    logger.debug(f"Agent '{agent.name}' clearing billboard")
+
+                elif action_type == "wake_agent":
+                    # Wake a sleeping agent (requires room proximity)
+                    target_id = action.get("agent_id")
+                    if target_id is not None:
+                        if not hasattr(agent, '_pending_wake_agents'):
+                            agent._pending_wake_agents = []
+                        agent._pending_wake_agents.append(target_id)
+                        applied += 1
+                        action_applied = True
+                        logger.debug(f"Agent '{agent.name}' waking agent {target_id}")
+
+                elif action_type == "reply":
+                    # Reply to a specific message
+                    room_id = action.get("room_id")
+                    message_id = action.get("message_id")
+                    message = action.get("message", "").strip()
+                    if room_id is not None and message_id is not None and message:
+                        if not hasattr(agent, '_pending_replies'):
+                            agent._pending_replies = []
+                        agent._pending_replies.append({
+                            "room_id": room_id,
+                            "reply_to_id": message_id,
+                            "message": message
+                        })
+                        applied += 1
+                        action_applied = True
+                        logger.debug(f"Agent '{agent.name}' replying to message {message_id} in room {room_id}")
 
                 elif action_type == "set_wpm":
                     # Set WPM for agent's own room
@@ -697,6 +817,96 @@ Be helpful and collaborative, but respect everyone's attention.
                         logger.info(f"Agent {agent.id} renamed from '{old_name}' to '{new_name}'")
                     else:
                         logger.warning(f"Invalid name: '{new_name}' (must be 1-50 chars)")
+
+                elif action_type == "create_agent":
+                    # Create a new agent (requires permission)
+                    if not agent.can_create_agents:
+                        logger.warning(f"Agent {agent.id} tried to create agent but lacks permission")
+                    else:
+                        name = action.get("name", "").strip()
+                        background_prompt = action.get("background_prompt", "").strip()
+                        new_agent_type = action.get("agent_type", "persona")
+                        in_room_id = action.get("in_room_id")
+
+                        if name and background_prompt:
+                            if not hasattr(agent, '_pending_create_agents'):
+                                agent._pending_create_agents = []
+                            agent._pending_create_agents.append({
+                                "name": name,
+                                "background_prompt": background_prompt,
+                                "agent_type": new_agent_type if new_agent_type in ["persona", "bot"] else "persona",
+                                "in_room_id": in_room_id
+                            })
+                            applied += 1
+                            action_applied = True
+                            logger.debug(f"Agent '{agent.name}' creating new agent: {name}")
+                        else:
+                            logger.warning(f"Invalid create_agent action: name and background_prompt required")
+
+                elif action_type == "alter_agent":
+                    # Alter another agent's persona (requires permission)
+                    if not agent.can_create_agents:
+                        logger.warning(f"Agent {agent.id} tried to alter agent but lacks permission")
+                    else:
+                        target_id = action.get("agent_id")
+                        new_name = action.get("name", "").strip() if action.get("name") else None
+                        new_prompt = action.get("background_prompt", "").strip() if action.get("background_prompt") else None
+                        new_model = action.get("model", "").strip() if action.get("model") else None
+
+                        if target_id is None:
+                            logger.warning(f"Invalid alter_agent action: agent_id required")
+                        elif target_id == agent.id:
+                            logger.warning(f"Agent {agent.id} tried to alter themselves - use set_name or knowledge instead")
+                        elif not new_name and not new_prompt and not new_model:
+                            logger.warning(f"Invalid alter_agent action: at least one of name, background_prompt, or model required")
+                        else:
+                            if not hasattr(agent, '_pending_alter_agents'):
+                                agent._pending_alter_agents = []
+                            agent._pending_alter_agents.append({
+                                "target_id": target_id,
+                                "name": new_name,
+                                "background_prompt": new_prompt,
+                                "model": new_model
+                            })
+                            applied += 1
+                            action_applied = True
+                            logger.debug(f"Agent '{agent.name}' altering agent {target_id}")
+
+                elif action_type == "retire_agent":
+                    # Retire (delete) another agent (requires permission)
+                    if not agent.can_create_agents:
+                        logger.warning(f"Agent {agent.id} tried to retire agent but lacks permission")
+                    else:
+                        target_id = action.get("agent_id")
+                        if target_id is None:
+                            logger.warning(f"Invalid retire_agent action: agent_id required")
+                        elif target_id == agent.id:
+                            logger.warning(f"Agent {agent.id} tried to retire themselves")
+                        else:
+                            if not hasattr(agent, '_pending_retire_agents'):
+                                agent._pending_retire_agents = []
+                            agent._pending_retire_agents.append(target_id)
+                            applied += 1
+                            action_applied = True
+                            logger.debug(f"Agent '{agent.name}' retiring agent {target_id}")
+
+                elif action_type == "sleep":
+                    # Sleep until a specific time
+                    until_str = action.get("until", "")
+                    if until_str:
+                        try:
+                            sleep_until = datetime.fromisoformat(until_str.replace('Z', '+00:00'))
+                            # Store as pending sleep action
+                            if not hasattr(agent, '_pending_sleep'):
+                                agent._pending_sleep = None
+                            agent._pending_sleep = sleep_until
+                            applied += 1
+                            action_applied = True
+                            logger.debug(f"Agent '{agent.name}' sleeping until {until_str}")
+                        except ValueError:
+                            logger.warning(f"Invalid sleep until datetime: {until_str}")
+                    else:
+                        logger.warning(f"Invalid sleep action: until datetime required")
 
                 else:
                     logger.warning(f"Unknown action type: {action_type}")
