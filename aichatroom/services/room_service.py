@@ -369,8 +369,16 @@ class RoomService:
         return self._database.get_messages_for_room_since(room_id, sequence_number)
 
     def send_message(self, room_id: int, sender_name: str, content: str,
-                     message_type: str = "text") -> ChatMessage:
-        """Send a message to a room."""
+                     message_type: str = "text", reply_to_id: int = None) -> ChatMessage:
+        """Send a message to a room.
+
+        Args:
+            room_id: The room to send the message to
+            sender_name: Name of the sender
+            content: Message content
+            message_type: Type of message (text, image, system)
+            reply_to_id: Optional ID of message being replied to
+        """
         seq_num = self._database.get_next_sequence_number()
         message = ChatMessage(
             room_id=room_id,
@@ -378,7 +386,8 @@ class RoomService:
             content=content,
             timestamp=datetime.utcnow(),
             sequence_number=seq_num,
-            message_type=message_type
+            message_type=message_type,
+            reply_to_id=reply_to_id
         )
         self._database.save_message(message)
         logger.info(f"Message in room {room_id} from '{sender_name}'")

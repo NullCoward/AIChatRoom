@@ -15,7 +15,7 @@ except ImportError:
 
 from services import DatabaseService, OpenAIService, HeartbeatService, RoomService, setup_logging, get_logger
 from models import AIAgent, ChatRoom
-from .dialogs import KnowledgeExplorerDialog, SettingsDialog, PromptEditorDialog, HUDHistoryDialog
+from .dialogs import KnowledgeExplorerDialog, SettingsDialog, PromptEditorDialog, HUDHistoryDialog, TOONTelemetryDialog
 import config
 
 logger = get_logger("ui")
@@ -101,38 +101,48 @@ class MainWindow:
         menubar.add_cascade(label="View", menu=view_menu)
         view_menu.add_command(label="Knowledge Explorer", command=self._open_knowledge_explorer)
         view_menu.add_command(label="HUD History", command=self._open_hud_history)
+        view_menu.add_separator()
+        view_menu.add_command(label="TOON Telemetry...", command=self._open_toon_telemetry)
 
         logger.info("Application initialized")
 
     def _create_ui(self) -> None:
         """Create all UI elements."""
         # Configure grid weights for the root
-        self._root.grid_columnconfigure(0, weight=0)  # Left panel - fixed width
-        self._root.grid_columnconfigure(1, weight=1)  # Right panel - expandable
+        self._root.grid_columnconfigure(0, weight=1)  # Left panel - expandable (agents + settings)
+        self._root.grid_columnconfigure(1, weight=2)  # Right panel - expandable (members + chat)
         self._root.grid_rowconfigure(0, weight=1)     # Main content
         self._root.grid_rowconfigure(1, weight=0)     # Status bar
 
-        # Left panel: Agent list
-        self._create_agent_panel()
+        # Left panel: Agent list + Agent Settings (stacked)
+        self._create_left_panel()
 
-        # Right panel: Details and Chat
-        self._create_main_panel()
+        # Right panel: Room Members + Chat
+        self._create_right_panel()
 
         # Bottom: Status bar
         self._create_status_bar()
 
-    def _create_agent_panel(self) -> None:
-        """Create left panel for agent list."""
-        panel = ctk.CTkFrame(self._root, width=280)
+    def _create_left_panel(self) -> None:
+        """Create left panel with agent list and agent settings stacked."""
+        panel = ctk.CTkFrame(self._root)
         panel.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
-        panel.grid_propagate(False)
+
+        # Configure panel grid - agents list on top, settings below
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(0, weight=1)  # Agent list expands
+        panel.grid_rowconfigure(1, weight=0)  # Settings fixed height
+
+        # === TOP: Agent List ===
+        agents_frame = ctk.CTkFrame(panel)
+        agents_frame.grid(row=0, column=0, sticky="nsew", padx=0, pady=(0, 5))
 
         # Title
-        title = ctk.CTkLabel(panel, text="Agents", font=self._font_title)
+        title = ctk.CTkLabel(agents_frame, text="Agents", font=self._font_title)
         title.pack(pady=(8, 6))
 
         # Agent listbox frame
-        list_frame = ctk.CTkFrame(panel, fg_color="transparent")
+        list_frame = ctk.CTkFrame(agents_frame, fg_color="transparent")
         list_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
 
         # Scrollable frame for agents
@@ -143,34 +153,40 @@ class MainWindow:
         self._agent_buttons = []
 
         # Action buttons
-        btn_frame = ctk.CTkFrame(panel, fg_color="transparent")
+        btn_frame = ctk.CTkFrame(agents_frame, fg_color="transparent")
         btn_frame.pack(fill="x", padx=6, pady=(0, 8))
 
         ctk.CTkButton(btn_frame, text="+ New", command=self._create_agent, height=28).pack(side="left", expand=True, fill="x", padx=(0, 3))
         ctk.CTkButton(btn_frame, text="Delete", command=self._delete_agent, height=28, fg_color="gray40", hover_color="gray30").pack(side="left", expand=True, fill="x", padx=(3, 0))
 
-    def _create_main_panel(self) -> None:
-        """Create right panel with agent settings and chat."""
+        # === BOTTOM: Agent Settings (collapsible) ===
+        self._create_settings_panel(panel)
+
+    def _create_right_panel(self) -> None:
+        """Create right panel with room members and chat."""
         panel = ctk.CTkFrame(self._root)
         panel.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
 
-        # Configure grid for panel
+        # Configure grid for panel - members on top, chat below
         panel.grid_columnconfigure(0, weight=1)
-        panel.grid_rowconfigure(0, weight=0)  # Collapsible settings header
-        panel.grid_rowconfigure(1, weight=0)  # Collapsible settings content
-        panel.grid_rowconfigure(2, weight=1)  # Chat row (main focus)
+        panel.grid_rowconfigure(0, weight=0)  # Room members section
+        panel.grid_rowconfigure(1, weight=1)  # Chat section (main focus - expands)
 
-        # Collapsible settings section
-        self._create_collapsible_settings(panel)
+        # Top: Room Members
+        self._create_members_section(panel)
 
-        # Main: Chat Room (takes most space)
+        # Bottom: Chat Room (takes most space)
         self._create_chat_section(panel)
 
-    def _create_collapsible_settings(self, parent) -> None:
-        """Create collapsible settings and members section."""
+    def _create_settings_panel(self, parent) -> None:
+        """Create collapsible agent settings panel in left column."""
+        # Settings container frame
+        settings_frame = ctk.CTkFrame(parent)
+        settings_frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+
         # Header bar with toggle
-        header = ctk.CTkFrame(parent, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=6, pady=(6, 3))
+        header = ctk.CTkFrame(settings_frame, fg_color="transparent")
+        header.pack(fill="x", padx=6, pady=(6, 3))
 
         self._settings_expanded = True
         self._settings_toggle_text = ctk.StringVar(value="▼ Agent Settings")
@@ -188,19 +204,11 @@ class MainWindow:
         toggle_btn.pack(side="left")
 
         # Collapsible content frame
-        self._settings_content = ctk.CTkFrame(parent)
-        self._settings_content.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 3))
+        self._settings_content = ctk.CTkFrame(settings_frame, fg_color="transparent")
+        self._settings_content.pack(fill="x", padx=6, pady=(0, 6))
 
-        # Configure grid inside content
-        self._settings_content.grid_columnconfigure(0, weight=1)
-        self._settings_content.grid_columnconfigure(1, weight=1)
-        self._settings_content.grid_rowconfigure(0, weight=1)
-
-        # Left: Agent Settings
+        # Agent Settings content (now full width of left panel)
         self._create_settings_section(self._settings_content)
-
-        # Right: Room Members
-        self._create_members_section(self._settings_content)
 
     def _toggle_settings(self) -> None:
         """Toggle the settings panel visibility."""
@@ -219,80 +227,81 @@ class MainWindow:
         self._heartbeat_interval_label.configure(text=f"{value:.1f}s")
 
     def _create_settings_section(self, parent) -> None:
-        """Create agent settings section."""
-        frame = ctk.CTkFrame(parent)
-        frame.grid(row=0, column=0, sticky="nsew", padx=(0, 3), pady=3)
-
+        """Create agent settings section (optimized for narrow left panel)."""
         # Settings content (no title - header has it)
-        content = ctk.CTkFrame(frame, fg_color="transparent")
-        content.pack(fill="both", expand=True, padx=6, pady=6)
+        content = ctk.CTkFrame(parent, fg_color="transparent")
+        content.pack(fill="x", padx=0, pady=0)
 
         # Row 1: Name
         row1 = ctk.CTkFrame(content, fg_color="transparent")
-        row1.pack(fill="x", pady=(0, 5))
+        row1.pack(fill="x", pady=(0, 4))
 
-        ctk.CTkLabel(row1, text="Name:", width=42, anchor="w").pack(side="left")
+        ctk.CTkLabel(row1, text="Name:", width=45, anchor="w").pack(side="left")
         self._agent_name_var = ctk.StringVar()
         ctk.CTkEntry(row1, textvariable=self._agent_name_var, height=26).pack(side="left", fill="x", expand=True, padx=(3, 0))
 
-        # Row 2: Model, WPM, Status
+        # Row 2: Model + Status
         row2 = ctk.CTkFrame(content, fg_color="transparent")
-        row2.pack(fill="x", pady=(0, 5))
+        row2.pack(fill="x", pady=(0, 4))
 
-        ctk.CTkLabel(row2, text="Model:", width=42, anchor="w").pack(side="left")
+        ctk.CTkLabel(row2, text="Model:", width=45, anchor="w").pack(side="left")
         self._agent_model_var = ctk.StringVar()
-        self._agent_model_combo = ctk.CTkComboBox(row2, variable=self._agent_model_var, width=110, height=26)
-        self._agent_model_combo.pack(side="left", padx=(3, 10))
-
-        ctk.CTkLabel(row2, text="WPM:", width=35, anchor="w").pack(side="left")
-        self._detail_wpm_var = ctk.StringVar(value="80")
-        ctk.CTkEntry(row2, textvariable=self._detail_wpm_var, width=45, height=26).pack(side="left", padx=(3, 10))
-
-        # Heartbeat interval slider
-        ctk.CTkLabel(row2, text="Speed:", width=40, anchor="w").pack(side="left")
-        self._heartbeat_interval_var = ctk.DoubleVar(value=5.0)
-        self._heartbeat_slider = ctk.CTkSlider(
-            row2,
-            from_=1.0,
-            to=10.0,
-            variable=self._heartbeat_interval_var,
-            width=80,
-            height=16,
-            number_of_steps=18  # 0.5s increments
-        )
-        self._heartbeat_slider.pack(side="left", padx=(3, 3))
-        self._heartbeat_interval_label = ctk.CTkLabel(row2, text="5.0s", width=30)
-        self._heartbeat_interval_label.pack(side="left", padx=(0, 10))
-        self._heartbeat_interval_var.trace_add("write", self._on_heartbeat_slider_change)
+        self._agent_model_combo = ctk.CTkComboBox(row2, variable=self._agent_model_var, height=26)
+        self._agent_model_combo.pack(side="left", fill="x", expand=True, padx=(3, 6))
 
         self._heartbeat_status_var = ctk.StringVar(value="● Idle")
         self._heartbeat_status_label = ctk.CTkLabel(row2, textvariable=self._heartbeat_status_var, text_color="#7ee787")
-        self._heartbeat_status_label.pack(side="left")
+        self._heartbeat_status_label.pack(side="right")
 
-        # Row 3: Permissions and Background label
+        # Row 3: WPM + Speed slider
         row3 = ctk.CTkFrame(content, fg_color="transparent")
         row3.pack(fill="x", pady=(0, 4))
 
+        ctk.CTkLabel(row3, text="WPM:", width=45, anchor="w").pack(side="left")
+        self._detail_wpm_var = ctk.StringVar(value="80")
+        ctk.CTkEntry(row3, textvariable=self._detail_wpm_var, width=50, height=26).pack(side="left", padx=(3, 10))
+
+        ctk.CTkLabel(row3, text="Speed:", anchor="w").pack(side="left")
+        self._heartbeat_interval_var = ctk.DoubleVar(value=5.0)
+        self._heartbeat_slider = ctk.CTkSlider(
+            row3,
+            from_=1.0,
+            to=10.0,
+            variable=self._heartbeat_interval_var,
+            height=16,
+            number_of_steps=18
+        )
+        self._heartbeat_slider.pack(side="left", fill="x", expand=True, padx=(3, 3))
+        self._heartbeat_interval_label = ctk.CTkLabel(row3, text="5.0s", width=32)
+        self._heartbeat_interval_label.pack(side="left")
+        self._heartbeat_interval_var.trace_add("write", self._on_heartbeat_slider_change)
+
+        # Row 4: Permissions checkbox
+        row4 = ctk.CTkFrame(content, fg_color="transparent")
+        row4.pack(fill="x", pady=(0, 4))
+
         self._can_create_agents_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(row3, text="Can create agents", variable=self._can_create_agents_var, height=22, checkbox_width=18, checkbox_height=18).pack(side="left")
-        ctk.CTkLabel(row3, text="Background:", anchor="w").pack(side="right")
+        ctk.CTkCheckBox(row4, text="Can create agents", variable=self._can_create_agents_var, height=22, checkbox_width=18, checkbox_height=18).pack(side="left")
+
+        # Row 5: Background label
+        ctk.CTkLabel(content, text="Background:", anchor="w").pack(fill="x", pady=(0, 2))
 
         # Background prompt
         self._agent_prompt_text = ctk.CTkTextbox(content, height=50)
-        self._agent_prompt_text.pack(fill="x", pady=(0, 5))
+        self._agent_prompt_text.pack(fill="x", pady=(0, 4))
 
         # Action buttons
         btn_frame = ctk.CTkFrame(content, fg_color="transparent")
         btn_frame.pack(fill="x")
 
-        ctk.CTkButton(btn_frame, text="Save", command=self._save_agent_details, height=26, width=60).pack(side="left", padx=(0, 3))
-        ctk.CTkButton(btn_frame, text="Knowledge", command=self._open_knowledge_explorer, height=26, width=70, fg_color="gray40", hover_color="gray30").pack(side="left", padx=(0, 3))
-        ctk.CTkButton(btn_frame, text="HUD", command=self._open_hud_history, height=26, width=45, fg_color="gray40", hover_color="gray30").pack(side="left")
+        ctk.CTkButton(btn_frame, text="Save", command=self._save_agent_details, height=26).pack(side="left", fill="x", expand=True, padx=(0, 2))
+        ctk.CTkButton(btn_frame, text="Knowledge", command=self._open_knowledge_explorer, height=26, fg_color="gray40", hover_color="gray30").pack(side="left", fill="x", expand=True, padx=(2, 2))
+        ctk.CTkButton(btn_frame, text="HUD", command=self._open_hud_history, height=26, fg_color="gray40", hover_color="gray30").pack(side="left", fill="x", expand=True, padx=(2, 0))
 
     def _create_members_section(self, parent) -> None:
         """Create room members section."""
         frame = ctk.CTkFrame(parent)
-        frame.grid(row=0, column=1, sticky="nsew", padx=(3, 0), pady=3)
+        frame.grid(row=0, column=0, sticky="nsew", padx=6, pady=(6, 3))
 
         content = ctk.CTkFrame(frame, fg_color="transparent")
         content.pack(fill="both", expand=True, padx=6, pady=6)
@@ -317,7 +326,7 @@ class MainWindow:
     def _create_chat_section(self, parent) -> None:
         """Create chat room section."""
         frame = ctk.CTkFrame(parent)
-        frame.grid(row=2, column=0, sticky="nsew", padx=6, pady=(3, 6))
+        frame.grid(row=1, column=0, sticky="nsew", padx=6, pady=(3, 6))
 
         # Configure grid
         frame.grid_columnconfigure(0, weight=1)
@@ -751,6 +760,10 @@ class MainWindow:
             messagebox.showwarning("No Agent", "Please select an agent first.")
             return
         dialog = HUDHistoryDialog(self._root, self._selected_agent, self._heartbeat)
+
+    def _open_toon_telemetry(self) -> None:
+        """Open the TOON telemetry viewer to compare format efficiency."""
+        dialog = TOONTelemetryDialog(self._root)
 
     def _on_close(self) -> None:
         """Handle window close."""

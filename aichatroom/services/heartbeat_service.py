@@ -19,6 +19,7 @@ from .hud_service import HUDService
 from .room_service import RoomService
 from .logging_config import get_logger
 from models import AIAgent, ChatRoom, RoomMembership, ChatMessage
+import config
 
 logger = get_logger("heartbeat")
 
@@ -423,8 +424,17 @@ class HeartbeatService:
                 self._store_hud_history(agent.id, hud_json, hud_tokens, None, error)
                 return
 
-            # Parse multi-room response
-            room_responses, actions = self._hud.parse_response(response)
+            # Parse multi-room response (using agent's output format preference)
+            room_responses, actions = self._hud.parse_response(
+                response,
+                output_format=getattr(agent, 'hud_output_format', 'json')
+            )
+
+            # Filter blocked responses when agent is over budget
+            # (Over-budget agents can only use knowledge actions to reduce memory usage)
+            room_responses, blocked_count = self._hud.filter_blocked_responses(agent, room_responses)
+            if blocked_count > 0:
+                logger.warning(f"Agent {agent.id}: {blocked_count} message(s) blocked due to over-budget state")
 
             # Log what we parsed
             logger.info(f"Agent {agent.id} response parsed: {len(room_responses)} messages, {len(actions)} actions")
@@ -680,10 +690,12 @@ class HeartbeatService:
         """Process an attention percentage change for a room."""
         room_id = change.get('room_id')
         value = change.get('value', '')
+        action = {"type": "set_attention", "room_id": room_id, "value": value}
 
         membership = self._database.get_membership(agent.id, room_id)
         if not membership:
             logger.warning(f"Agent {agent.id} tried to set attention for room {room_id} but not a member")
+            self._hud._record_action(agent.id, action, f"error: not a member of room {room_id}")
             return
 
         if value == '%*':
@@ -698,140 +710,181 @@ class HeartbeatService:
                 membership.is_dynamic = False
             except ValueError:
                 logger.warning(f"Invalid attention value: {value}")
+                self._hud._record_action(agent.id, action, f"error: invalid attention value '{value}'")
                 return
 
         self._database.save_membership(membership)
         logger.info(f"Agent {agent.id} set attention for room {room_id} to {value}")
+        self._hud._record_action(agent.id, action, "ok")
 
         # Notify so changes are visible immediately
         self._room_service.notify_membership_changed(room_id)
 
-    def _process_key_action(self, agent: AIAgent, action: dict) -> None:
+    def _process_key_action(self, agent: AIAgent, action_data: dict) -> None:
         """Process a key create/revoke action."""
-        action_type = action.get('action')
-        key_value = action.get('key')
+        action_type = action_data.get('action')
+        key_value = action_data.get('key')
+        hud_action_type = "create_key" if action_type == 'create' else "revoke_key"
+        action = {"type": hud_action_type, "key": key_value}
 
         if action_type == 'create':
             # Create key for agent's own room (agent.id = room.id)
             try:
                 self._database.create_room_key(agent.id, key_value)
                 logger.info(f"Agent {agent.id} created key: {key_value}")
+                self._hud._record_action(agent.id, action, "ok")
             except Exception as e:
                 logger.error(f"Failed to create key for agent {agent.id}: {e}")
+                self._hud._record_action(agent.id, action, f"error: {str(e)}")
 
         elif action_type == 'revoke':
             if self._database.revoke_room_key(agent.id, key_value):
                 logger.info(f"Agent {agent.id} revoked key: {key_value}")
+                self._hud._record_action(agent.id, action, "ok")
             else:
                 logger.warning(f"Agent {agent.id} failed to revoke key: {key_value}")
+                self._hud._record_action(agent.id, action, "error: key not found")
 
-    def _process_access_action(self, agent: AIAgent, action: dict) -> None:
+    def _process_access_action(self, agent: AIAgent, action_data: dict) -> None:
         """Process an access request/grant/deny action."""
-        action_type = action.get('action')
+        action_type = action_data.get('action')
 
         if action_type == 'request':
-            room_id = action.get('room_id')
-            key_value = action.get('key')
+            room_id = action_data.get('room_id')
+            key_value = action_data.get('key')
+            hud_action = {"type": "request_access", "room_id": room_id, "key": key_value}
 
             # Verify the key exists and is valid for the room
             key = self._database.get_key_by_value(key_value)
             if not key:
                 logger.warning(f"Agent {agent.id} tried to use non-existent key: {key_value}")
+                self._hud._record_action(agent.id, hud_action, "error: key does not exist")
                 return
             if key['room_id'] != room_id:
                 logger.warning(f"Agent {agent.id} tried to use key {key_value} for wrong room {room_id}")
+                self._hud._record_action(agent.id, hud_action, "error: key is for a different room")
                 return
             if key['revoked']:
                 logger.warning(f"Agent {agent.id} tried to use revoked key: {key_value}")
+                self._hud._record_action(agent.id, hud_action, "error: key has been revoked")
                 return
 
             # Check if already a member
             existing = self._database.get_membership(agent.id, room_id)
             if existing:
                 logger.warning(f"Agent {agent.id} already a member of room {room_id}")
+                self._hud._record_action(agent.id, hud_action, "error: already a member of this room")
                 return
 
             # Check for existing pending request
             pending = self._database.get_pending_request(agent.id, room_id)
             if pending:
                 logger.warning(f"Agent {agent.id} already has pending request for room {room_id}")
+                self._hud._record_action(agent.id, hud_action, "error: already have pending request")
                 return
 
             # Create access request
             request_id = self._database.create_access_request(agent.id, room_id, key_value)
+            self._hud._record_action(agent.id, hud_action, f"ok: request #{request_id} sent")
 
             # Send notification to room owner (the room IS the agent)
             self._send_access_request_notification(agent.id, room_id, request_id, key_value)
 
         elif action_type == 'grant':
-            request_id = action.get('request_id')
+            request_id = action_data.get('request_id')
+            hud_action = {"type": "grant_access", "request_id": request_id}
             request = self._database.get_access_request(request_id)
 
-            if request and request['status'] == 'pending':
-                # Verify this agent owns the room
-                if request['room_id'] != agent.id:
-                    logger.warning(f"Agent {agent.id} tried to grant access to room {request['room_id']} they don't own")
-                    return
+            if not request:
+                self._hud._record_action(agent.id, hud_action, "error: request not found")
+                return
+            if request['status'] != 'pending':
+                self._hud._record_action(agent.id, hud_action, f"error: request already {request['status']}")
+                return
+            # Verify this agent owns the room
+            if request['room_id'] != agent.id:
+                logger.warning(f"Agent {agent.id} tried to grant access to room {request['room_id']} they don't own")
+                self._hud._record_action(agent.id, hud_action, "error: not your room")
+                return
 
-                # Grant access - add requester to room
-                requester_id = request['requester_id']
-                if self._room_service:
-                    requester = self._database.get_agent(requester_id)
-                    if requester:
-                        self._room_service.join_room(requester, agent.id)
-                        self._database.update_request_status(request_id, 'granted')
-                        logger.info(f"Agent {agent.id} granted access to agent {requester_id}")
+            # Grant access - add requester to room
+            requester_id = request['requester_id']
+            if self._room_service:
+                requester = self._database.get_agent(requester_id)
+                if requester:
+                    self._room_service.join_room(requester, agent.id)
+                    self._database.update_request_status(request_id, 'granted')
+                    logger.info(f"Agent {agent.id} granted access to agent {requester_id}")
+                    self._hud._record_action(agent.id, hud_action, f"ok: agent {requester_id} joined")
+                else:
+                    self._hud._record_action(agent.id, hud_action, "error: requester no longer exists")
 
         elif action_type == 'deny':
-            request_id = action.get('request_id')
+            request_id = action_data.get('request_id')
+            hud_action = {"type": "deny_access", "request_id": request_id}
             request = self._database.get_access_request(request_id)
 
-            if request and request['status'] == 'pending':
-                # Verify this agent owns the room
-                if request['room_id'] != agent.id:
-                    logger.warning(f"Agent {agent.id} tried to deny access to room {request['room_id']} they don't own")
-                    return
+            if not request:
+                self._hud._record_action(agent.id, hud_action, "error: request not found")
+                return
+            if request['status'] != 'pending':
+                self._hud._record_action(agent.id, hud_action, f"error: request already {request['status']}")
+                return
+            # Verify this agent owns the room
+            if request['room_id'] != agent.id:
+                logger.warning(f"Agent {agent.id} tried to deny access to room {request['room_id']} they don't own")
+                self._hud._record_action(agent.id, hud_action, "error: not your room")
+                return
 
-                self._database.update_request_status(request_id, 'denied')
-                logger.info(f"Agent {agent.id} denied access request {request_id}")
+            self._database.update_request_status(request_id, 'denied')
+            logger.info(f"Agent {agent.id} denied access request {request_id}")
+            self._hud._record_action(agent.id, hud_action, "ok")
 
-    def _process_room_action(self, agent: AIAgent, action: dict) -> None:
+    def _process_room_action(self, agent: AIAgent, action_data: dict) -> None:
         """Process a room leave action."""
-        action_type = action.get('action')
+        action_type = action_data.get('action')
 
         if action_type == 'leave':
-            room_id = action.get('room_id')
+            room_id = action_data.get('room_id')
+            hud_action = {"type": "leave_room", "room_id": room_id}
 
             # Can't leave own room
             if room_id == agent.id:
                 logger.warning(f"Agent {agent.id} tried to leave their own room")
+                self._hud._record_action(agent.id, hud_action, "error: cannot leave your own room")
                 return
 
             if self._room_service:
                 self._room_service.leave_room(agent.id, room_id)
                 logger.info(f"Agent {agent.id} left room {room_id}")
+                self._hud._record_action(agent.id, hud_action, "ok")
 
-    def _process_billboard_action(self, agent: AIAgent, action: dict) -> None:
+    def _process_billboard_action(self, agent: AIAgent, action_data: dict) -> None:
         """Process a billboard set/clear action for the agent's room."""
-        action_type = action.get('action')
+        action_type = action_data.get('action')
 
         if action_type == 'set':
-            message = action.get('message', '')
+            message = action_data.get('message', '')
+            hud_action = {"type": "set_billboard", "message": message}
             agent.room_billboard = message
             self._database.save_agent(agent)
             logger.info(f"Agent {agent.id} set billboard: {message[:50]}...")
+            self._hud._record_action(agent.id, hud_action, "ok")
             # Notify so billboard change is visible immediately
             self._room_service.notify_agent_status_changed(agent)
 
         elif action_type == 'clear':
+            hud_action = {"type": "clear_billboard"}
             agent.room_billboard = ''
             self._database.save_agent(agent)
             logger.info(f"Agent {agent.id} cleared billboard")
+            self._hud._record_action(agent.id, hud_action, "ok")
             # Notify so billboard change is visible immediately
             self._room_service.notify_agent_status_changed(agent)
 
     def _process_wake_agent(self, agent: AIAgent, target_id: int) -> None:
         """Process wake agent action - requires room proximity."""
+        hud_action = {"type": "wake_agent", "agent_id": target_id}
         try:
             # Check room proximity - must share at least one room
             agent_rooms = {m.room_id for m in self._database.get_agent_memberships(agent.id)}
@@ -839,16 +892,19 @@ class HeartbeatService:
 
             if not agent_rooms.intersection(target_rooms):
                 logger.warning(f"Agent {agent.id} tried to wake agent {target_id} but they share no rooms")
+                self._hud._record_action(agent.id, hud_action, "error: no shared rooms with target")
                 return
 
             # Get and wake the target agent
             target_agent = self._database.get_agent(target_id)
             if not target_agent:
                 logger.warning(f"Agent {agent.id} tried to wake non-existent agent {target_id}")
+                self._hud._record_action(agent.id, hud_action, "error: agent not found")
                 return
 
             if not target_agent.sleep_until:
                 logger.warning(f"Agent {agent.id} tried to wake agent {target_id} but they're not sleeping")
+                self._hud._record_action(agent.id, hud_action, "error: agent is not sleeping")
                 return
 
             # Wake the agent
@@ -856,24 +912,28 @@ class HeartbeatService:
             target_agent.status = "idle"
             self._database.save_agent(target_agent)
             logger.info(f"Agent {agent.id} woke up agent {target_id}")
+            self._hud._record_action(agent.id, hud_action, "ok")
 
             # Notify UI
             self._room_service.notify_agent_status_changed(target_agent)
 
         except Exception as e:
             logger.error(f"Failed to wake agent {target_id}: {e}")
+            self._hud._record_action(agent.id, hud_action, f"error: {str(e)}")
 
     def _process_reply(self, agent: AIAgent, reply_data: dict) -> None:
         """Process a reply message."""
         room_id = reply_data.get('room_id')
         reply_to_id = reply_data.get('reply_to_id')
         message = reply_data.get('message', '')
+        hud_action = {"type": "reply", "room_id": room_id, "message_id": reply_to_id}
 
         try:
             # Verify agent is in the room
             membership = self._database.get_membership(agent.id, room_id)
             if not membership:
                 logger.warning(f"Agent {agent.id} tried to reply in room {room_id} but not a member")
+                self._hud._record_action(agent.id, hud_action, f"error: not a member of room {room_id}")
                 return
 
             # Save the reply message
@@ -899,9 +959,11 @@ class HeartbeatService:
             self._room_service.notify_messages_changed()
 
             logger.info(f"Agent {agent.id} replied to message {reply_to_id} in room {room_id}")
+            self._hud._record_action(agent.id, hud_action, "ok")
 
         except Exception as e:
             logger.error(f"Failed to process reply: {e}")
+            self._hud._record_action(agent.id, hud_action, f"error: {str(e)}")
 
     def _send_access_request_notification(self, requester_id: int, room_id: int, request_id: int, key_value: str) -> None:
         """Send a system message to the room owner about an access request."""
@@ -927,24 +989,36 @@ class HeartbeatService:
         background_prompt = create_data.get('background_prompt', 'You are a helpful assistant.')
         agent_type = create_data.get('agent_type', 'persona')
         in_room_id = create_data.get('in_room_id')
+        hud_action = {"type": "create_agent", "name": name, "agent_type": agent_type}
 
         try:
             # Create the new agent using room_service
+            # Use model from create_data if specified, otherwise use config default
+            # Translate alias to actual model ID (e.g., "smart" -> "gpt-5-mini")
+            model = create_data.get('model', config.DEFAULT_MODEL)
+            actual_model = config.MODEL_ALIASES.get(model.lower(), model) if model else config.DEFAULT_MODEL
+
+            # Validate model is in approved list
+            if actual_model not in config.APPROVED_MODELS:
+                logger.warning(f"Agent {agent.id} tried to create agent with invalid model '{model}' (resolved: '{actual_model}'). Using default: {config.DEFAULT_MODEL}")
+                actual_model = config.DEFAULT_MODEL
             new_agent = self._room_service.create_agent(
                 name=name,
                 background_prompt=background_prompt,
                 in_room_id=in_room_id,
-                model="gpt-4o-mini",  # Default model
+                model=actual_model,
                 agent_type=agent_type
             )
 
             logger.info(f"Agent {agent.id} created new agent '{name}' (ID {new_agent.id})")
+            self._hud._record_action(agent.id, hud_action, f"ok: created agent #{new_agent.id} '{name}'")
 
             # Notify UI of the new agent
             self._room_service._notify_room_changed()
 
         except Exception as e:
             logger.error(f"Failed to create agent: {e}")
+            self._hud._record_action(agent.id, hud_action, f"error: {str(e)}")
 
     def _process_alter_agent(self, agent: AIAgent, alter_data: dict) -> None:
         """Process agent alteration action - requires room proximity."""
@@ -952,6 +1026,11 @@ class HeartbeatService:
         new_name = alter_data.get('name')
         new_prompt = alter_data.get('background_prompt')
         new_model = alter_data.get('model')
+        hud_action = {"type": "alter_agent", "agent_id": target_id}
+        if new_name:
+            hud_action["name"] = new_name
+        if new_model:
+            hud_action["model"] = new_model
 
         try:
             # Check room proximity - must share at least one room
@@ -960,31 +1039,48 @@ class HeartbeatService:
 
             if not agent_rooms.intersection(target_rooms):
                 logger.warning(f"Agent {agent.id} tried to alter agent {target_id} but they share no rooms")
+                self._hud._record_action(agent.id, hud_action, "error: no shared rooms with target")
                 return
 
             # Get the target agent
             target_agent = self._database.get_agent(target_id)
             if not target_agent:
                 logger.warning(f"Agent {agent.id} tried to alter non-existent agent {target_id}")
+                self._hud._record_action(agent.id, hud_action, "error: agent not found")
                 return
+
+            changes = []
 
             # Apply changes
             if new_name:
                 old_name = target_agent.name
                 target_agent.name = new_name
                 logger.info(f"Agent {agent.id} renamed agent {target_id} from '{old_name}' to '{new_name}'")
+                changes.append(f"name→{new_name}")
 
             if new_prompt:
                 target_agent.background_prompt = new_prompt
                 logger.info(f"Agent {agent.id} altered agent {target_id}'s background prompt")
+                changes.append("prompt updated")
 
             if new_model:
-                old_model = target_agent.model
-                target_agent.model = new_model
-                logger.info(f"Agent {agent.id} changed agent {target_id}'s model from '{old_model}' to '{new_model}'")
+                # Translate alias to actual model ID (e.g., "smart" -> "gpt-5-mini")
+                actual_model = config.MODEL_ALIASES.get(new_model.lower(), new_model)
+
+                # Validate model is in approved list
+                if actual_model not in config.APPROVED_MODELS:
+                    logger.warning(f"Agent {agent.id} tried to set invalid model '{new_model}' (resolved: '{actual_model}') on agent {target_id}. Use: {list(config.MODEL_ALIASES.keys())}")
+                    self._hud._record_action(agent.id, hud_action, f"error: invalid model '{new_model}'")
+                    return
+                else:
+                    old_model = target_agent.model
+                    target_agent.model = actual_model
+                    logger.info(f"Agent {agent.id} changed agent {target_id}'s model from '{old_model}' to '{actual_model}' (alias: {new_model})")
+                    changes.append(f"model→{actual_model}")
 
             # Save the target agent
             self._database.save_agent(target_agent)
+            self._hud._record_action(agent.id, hud_action, f"ok: {', '.join(changes)}")
 
             # Notify UI of changes
             self._room_service.notify_agent_status_changed(target_agent)
@@ -992,9 +1088,11 @@ class HeartbeatService:
 
         except Exception as e:
             logger.error(f"Failed to alter agent {target_id}: {e}")
+            self._hud._record_action(agent.id, hud_action, f"error: {str(e)}")
 
     def _process_retire_agent(self, agent: AIAgent, target_id: int) -> None:
         """Process retire agent action - requires room proximity."""
+        hud_action = {"type": "retire_agent", "agent_id": target_id}
         try:
             # Check room proximity - must share at least one room
             agent_rooms = {m.room_id for m in self._database.get_agent_memberships(agent.id)}
@@ -1002,42 +1100,52 @@ class HeartbeatService:
 
             if not agent_rooms.intersection(target_rooms):
                 logger.warning(f"Agent {agent.id} tried to retire agent {target_id} but they share no rooms")
+                self._hud._record_action(agent.id, hud_action, "error: no shared rooms with target")
                 return
 
             # Get the target agent
             target_agent = self._database.get_agent(target_id)
             if not target_agent:
                 logger.warning(f"Agent {agent.id} tried to retire non-existent agent {target_id}")
+                self._hud._record_action(agent.id, hud_action, "error: agent not found")
                 return
+
+            target_name = target_agent.name
 
             # Delete the agent and their room
             self._database.delete_agent(target_id)
-            logger.info(f"Agent {agent.id} retired agent {target_id} ('{target_agent.name}')")
+            logger.info(f"Agent {agent.id} retired agent {target_id} ('{target_name}')")
+            self._hud._record_action(agent.id, hud_action, f"ok: retired '{target_name}'")
 
             # Notify UI
             self._room_service._notify_room_changed()
 
         except Exception as e:
             logger.error(f"Failed to retire agent {target_id}: {e}")
+            self._hud._record_action(agent.id, hud_action, f"error: {str(e)}")
 
     def _process_sleep(self, agent: AIAgent, sleep_until: datetime) -> None:
         """Process sleep action - set agent to sleep until specified time."""
+        hud_action = {"type": "sleep", "until": sleep_until.isoformat()}
         try:
             agent.sleep_until = sleep_until
             agent.status = "sleeping"
             self._database.save_agent(agent)
             logger.info(f"Agent {agent.id} is now sleeping until {sleep_until.isoformat()}")
+            self._hud._record_action(agent.id, hud_action, "ok")
 
             # Notify UI
             self._room_service.notify_agent_status_changed(agent)
 
         except Exception as e:
             logger.error(f"Failed to set agent {agent.id} to sleep: {e}")
+            self._hud._record_action(agent.id, hud_action, f"error: {str(e)}")
 
     def _process_reaction(self, agent: AIAgent, reaction: dict) -> None:
         """Process a reaction to a message and adjust heartbeat of message sender."""
         message_id = reaction.get('message_id')
         reaction_type = reaction.get('reaction')
+        hud_action = {"type": "react", "message_id": message_id, "reaction": reaction_type}
 
         if not message_id or not reaction_type:
             return
@@ -1046,15 +1154,18 @@ class HeartbeatService:
         message = self._database.get_message_by_id(message_id)
         if not message:
             logger.warning(f"Agent {agent.id} tried to react to non-existent message {message_id}")
+            self._hud._record_action(agent.id, hud_action, "error: message not found")
             return
 
         # Can't react to own messages
         if message.sender_name == str(agent.id):
             logger.warning(f"Agent {agent.id} tried to react to their own message")
+            self._hud._record_action(agent.id, hud_action, "error: cannot react to own message")
             return
 
         # Add the reaction
         self._database.add_reaction(message_id, agent.id, reaction_type)
+        self._hud._record_action(agent.id, hud_action, "ok")
 
         # Adjust sender's heartbeat interval based on reaction
         sender_id_str = message.sender_name

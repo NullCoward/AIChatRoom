@@ -1,2 +1,5 @@
 openai
 tiktoken
+fastapi
+uvicorn[standard]
+pydantic

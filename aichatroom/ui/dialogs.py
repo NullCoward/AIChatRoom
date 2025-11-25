@@ -5,8 +5,22 @@ from tkinter import ttk, messagebox, simpledialog
 from typing import List, Optional, Callable
 import os
 from models import AIAgent, ChatRoom, RoomMembership, SelfConcept
-from services import DatabaseService, RoomService
+from models.ai_agent import HUD_FORMAT_JSON, HUD_FORMAT_COMPACT, HUD_FORMAT_TOON
+from services import DatabaseService, RoomService, get_telemetry
 import config
+
+# HUD INPUT format options (what we send to agent)
+HUD_INPUT_FORMAT_OPTIONS = [
+    (HUD_FORMAT_JSON, "JSON (Standard)", "Full JSON with indentation - baseline format"),
+    (HUD_FORMAT_COMPACT, "Compact JSON", "Minified JSON with short keys - ~20-30% savings"),
+    (HUD_FORMAT_TOON, "TOON (Experimental)", "Token-Oriented Object Notation - ~30-45% savings"),
+]
+
+# HUD OUTPUT format options (what agent sends back)
+HUD_OUTPUT_FORMAT_OPTIONS = [
+    (HUD_FORMAT_JSON, "JSON (Standard)", "Agent responds with standard JSON actions"),
+    (HUD_FORMAT_TOON, "TOON (Experimental)", "Agent responds using TOON notation"),
+]
 
 
 class AgentManagerDialog(tk.Toplevel):
@@ -22,7 +36,8 @@ class AgentManagerDialog(tk.Toplevel):
     ):
         super().__init__(parent)
         self.title("Agent Manager")
-        self.geometry("600x500")
+        self.geometry("700x600")
+        self.minsize(600, 500)
         self.transient(parent)
 
         self._database = database
@@ -41,91 +56,193 @@ class AgentManagerDialog(tk.Toplevel):
         self._refresh_agents()
 
     def _setup_ui(self):
-        """Set up the dialog UI."""
-        # Left panel - agent list
+        """Set up the dialog UI with proportional sizing."""
+        # Use grid layout for the main container
+        self.grid_columnconfigure(0, weight=0, minsize=180)  # Left panel - fixed width
+        self.grid_columnconfigure(1, weight=1)  # Right panel - expandable
+        self.grid_rowconfigure(0, weight=1)
+
+        # === Left panel - agent list ===
         left_frame = tk.Frame(self, bg=self._bg_dark)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, padx=5, pady=5)
+        left_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        left_frame.grid_rowconfigure(1, weight=1)  # Listbox expands
+        left_frame.grid_columnconfigure(0, weight=1)
 
         tk.Label(left_frame, text="Agents", bg=self._bg_dark, fg=self._fg_light,
-                 font=("Segoe UI", 10, "bold")).pack(anchor=tk.W)
+                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
 
         self._agent_listbox = tk.Listbox(
-            left_frame, width=20, height=15,
+            left_frame, width=22,
             bg=self._bg_medium, fg=self._fg_light,
-            selectbackground="#555555"
+            selectbackground="#555555", exportselection=False
         )
-        self._agent_listbox.pack(fill=tk.BOTH, expand=True, pady=5)
+        self._agent_listbox.grid(row=1, column=0, sticky="nsew", pady=5)
         self._agent_listbox.bind('<<ListboxSelect>>', self._on_agent_select)
+
+        # Scrollbar for agent list
+        agent_scrollbar = ttk.Scrollbar(left_frame, orient=tk.VERTICAL, command=self._agent_listbox.yview)
+        agent_scrollbar.grid(row=1, column=1, sticky="ns", pady=5)
+        self._agent_listbox.config(yscrollcommand=agent_scrollbar.set)
 
         # Buttons
         btn_frame = tk.Frame(left_frame, bg=self._bg_dark)
-        btn_frame.pack(fill=tk.X)
+        btn_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(5, 0))
 
         ttk.Button(btn_frame, text="New", command=self._create_agent).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_frame, text="Delete", command=self._delete_agent).pack(side=tk.LEFT, padx=2)
 
-        # Right panel - agent details
+        # === Right panel - agent details ===
         right_frame = tk.Frame(self, bg=self._bg_dark)
-        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        right_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
 
-        # Agent Type
-        tk.Label(right_frame, text="Type:", bg=self._bg_dark, fg=self._fg_light).pack(anchor=tk.W)
+        # Configure right panel grid - expandable text areas get weight
+        right_frame.grid_columnconfigure(0, weight=1)
+        right_frame.grid_rowconfigure(5, weight=2)   # Background prompt - more weight
+        right_frame.grid_rowconfigure(7, weight=1)   # Self-concept - less weight
+
+        row = 0
+
+        # --- Row 0: Agent Type ---
+        type_container = tk.Frame(right_frame, bg=self._bg_dark)
+        type_container.grid(row=row, column=0, sticky="ew", pady=(0, 5))
+
+        tk.Label(type_container, text="Type:", bg=self._bg_dark, fg=self._fg_light).pack(side=tk.LEFT)
         self._type_var = tk.StringVar(value="persona")
-        type_frame = tk.Frame(right_frame, bg=self._bg_dark)
-        type_frame.pack(fill=tk.X, pady=(0, 10))
-        tk.Radiobutton(type_frame, text="Persona", variable=self._type_var, value="persona",
+        tk.Radiobutton(type_container, text="Persona", variable=self._type_var, value="persona",
+                       bg=self._bg_dark, fg=self._fg_light, selectcolor=self._bg_medium,
+                       activebackground=self._bg_dark, activeforeground=self._fg_light,
+                       command=self._on_type_changed).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Radiobutton(type_container, text="Bot", variable=self._type_var, value="bot",
                        bg=self._bg_dark, fg=self._fg_light, selectcolor=self._bg_medium,
                        activebackground=self._bg_dark, activeforeground=self._fg_light,
                        command=self._on_type_changed).pack(side=tk.LEFT)
-        tk.Radiobutton(type_frame, text="Bot", variable=self._type_var, value="bot",
-                       bg=self._bg_dark, fg=self._fg_light, selectcolor=self._bg_medium,
-                       activebackground=self._bg_dark, activeforeground=self._fg_light,
-                       command=self._on_type_changed).pack(side=tk.LEFT)
+        row += 1
 
-        # Name
-        tk.Label(right_frame, text="Name:", bg=self._bg_dark, fg=self._fg_light).pack(anchor=tk.W)
+        # --- Row 1: Name ---
+        name_container = tk.Frame(right_frame, bg=self._bg_dark)
+        name_container.grid(row=row, column=0, sticky="ew", pady=(0, 5))
+        name_container.grid_columnconfigure(1, weight=1)
+
+        tk.Label(name_container, text="Name:", bg=self._bg_dark, fg=self._fg_light).grid(row=0, column=0, sticky="w")
         self._name_var = tk.StringVar()
-        self._name_entry = tk.Entry(right_frame, textvariable=self._name_var,
+        self._name_entry = tk.Entry(name_container, textvariable=self._name_var,
                                     bg=self._bg_medium, fg=self._fg_light,
                                     insertbackground=self._fg_light)
-        self._name_entry.pack(fill=tk.X, pady=(0, 10))
+        self._name_entry.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        row += 1
 
-        # Model
-        tk.Label(right_frame, text="Model:", bg=self._bg_dark, fg=self._fg_light).pack(anchor=tk.W)
+        # --- Row 2: Model ---
+        model_container = tk.Frame(right_frame, bg=self._bg_dark)
+        model_container.grid(row=row, column=0, sticky="ew", pady=(0, 5))
+        model_container.grid_columnconfigure(1, weight=1)
+
+        tk.Label(model_container, text="Model:", bg=self._bg_dark, fg=self._fg_light).grid(row=0, column=0, sticky="w")
         self._model_var = tk.StringVar()
-        self._model_combo = ttk.Combobox(right_frame, textvariable=self._model_var,
+        self._model_combo = ttk.Combobox(model_container, textvariable=self._model_var,
                                          values=self._available_models)
-        self._model_combo.pack(fill=tk.X, pady=(0, 10))
+        self._model_combo.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        row += 1
 
-        # Background prompt / Role (label changes based on type)
+        # --- Row 3: HUD Format section ---
+        hud_section = tk.LabelFrame(right_frame, text="HUD Format (TOON Testing)",
+                                     bg=self._bg_dark, fg=self._fg_light, font=("Segoe UI", 9))
+        hud_section.grid(row=row, column=0, sticky="ew", pady=(0, 5))
+
+        # Use horizontal layout for input/output
+        hud_inner = tk.Frame(hud_section, bg=self._bg_dark)
+        hud_inner.pack(fill=tk.X, padx=5, pady=3)
+        hud_inner.grid_columnconfigure(0, weight=1)
+        hud_inner.grid_columnconfigure(1, weight=1)
+
+        # Input format (left)
+        input_frame = tk.Frame(hud_inner, bg=self._bg_dark)
+        input_frame.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+
+        tk.Label(input_frame, text="Input:", bg=self._bg_dark,
+                 fg=self._fg_light, font=("Segoe UI", 8, "bold")).pack(anchor=tk.W)
+        self._hud_input_var = tk.StringVar(value="JSON (Standard)")
+        input_labels = [opt[1] for opt in HUD_INPUT_FORMAT_OPTIONS]
+        self._hud_input_combo = ttk.Combobox(input_frame, textvariable=self._hud_input_var,
+                                              values=input_labels, state="readonly")
+        self._hud_input_combo.pack(fill=tk.X)
+        self._hud_input_combo.bind('<<ComboboxSelected>>', self._on_hud_input_changed)
+
+        self._hud_input_desc_var = tk.StringVar(value=HUD_INPUT_FORMAT_OPTIONS[0][2])
+        tk.Label(input_frame, textvariable=self._hud_input_desc_var, bg=self._bg_dark, fg="#666666",
+                 font=("Segoe UI", 7), wraplength=200).pack(anchor=tk.W)
+
+        # Output format (right)
+        output_frame = tk.Frame(hud_inner, bg=self._bg_dark)
+        output_frame.grid(row=0, column=1, sticky="ew")
+
+        tk.Label(output_frame, text="Output:", bg=self._bg_dark,
+                 fg=self._fg_light, font=("Segoe UI", 8, "bold")).pack(anchor=tk.W)
+        self._hud_output_var = tk.StringVar(value="JSON (Standard)")
+        output_labels = [opt[1] for opt in HUD_OUTPUT_FORMAT_OPTIONS]
+        self._hud_output_combo = ttk.Combobox(output_frame, textvariable=self._hud_output_var,
+                                               values=output_labels, state="readonly")
+        self._hud_output_combo.pack(fill=tk.X)
+        self._hud_output_combo.bind('<<ComboboxSelected>>', self._on_hud_output_changed)
+
+        self._hud_output_desc_var = tk.StringVar(value=HUD_OUTPUT_FORMAT_OPTIONS[0][2])
+        tk.Label(output_frame, textvariable=self._hud_output_desc_var, bg=self._bg_dark, fg="#666666",
+                 font=("Segoe UI", 7), wraplength=200).pack(anchor=tk.W)
+        row += 1
+
+        # --- Row 4: Background prompt label ---
         self._prompt_label = tk.Label(right_frame, text="Background Prompt:", bg=self._bg_dark, fg=self._fg_light)
-        self._prompt_label.pack(anchor=tk.W)
-        self._prompt_text = tk.Text(right_frame, height=8,
+        self._prompt_label.grid(row=row, column=0, sticky="w")
+        row += 1
+
+        # --- Row 5: Background prompt text (expandable) ---
+        prompt_frame = tk.Frame(right_frame, bg=self._bg_dark)
+        prompt_frame.grid(row=row, column=0, sticky="nsew", pady=(0, 5))
+        prompt_frame.grid_rowconfigure(0, weight=1)
+        prompt_frame.grid_columnconfigure(0, weight=1)
+
+        self._prompt_text = tk.Text(prompt_frame,
                                     bg=self._bg_medium, fg=self._fg_light,
                                     insertbackground=self._fg_light, wrap=tk.WORD)
-        self._prompt_text.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        self._prompt_text.grid(row=0, column=0, sticky="nsew")
 
-        # Status info
-        tk.Label(right_frame, text="Status:", bg=self._bg_dark, fg=self._fg_light).pack(anchor=tk.W)
-        self._status_text = tk.Text(right_frame, height=4, state=tk.DISABLED,
+        prompt_scrollbar = ttk.Scrollbar(prompt_frame, orient=tk.VERTICAL, command=self._prompt_text.yview)
+        prompt_scrollbar.grid(row=0, column=1, sticky="ns")
+        self._prompt_text.config(yscrollcommand=prompt_scrollbar.set)
+        row += 1
+
+        # --- Row 6: Status info (compact) ---
+        status_frame = tk.LabelFrame(right_frame, text="Status", bg=self._bg_dark, fg=self._fg_light)
+        status_frame.grid(row=row, column=0, sticky="ew", pady=(0, 5))
+
+        self._status_text = tk.Text(status_frame, height=3, state=tk.DISABLED,
                                     bg=self._bg_medium, fg=self._fg_light, wrap=tk.WORD)
-        self._status_text.pack(fill=tk.X, pady=(0, 10))
+        self._status_text.pack(fill=tk.X, padx=3, pady=3)
+        row += 1
 
-        # Self-concept browser
-        tk.Label(right_frame, text="Self-Concept:", bg=self._bg_dark, fg=self._fg_light).pack(anchor=tk.W)
-        self._concept_text = tk.Text(right_frame, height=8, state=tk.DISABLED,
+        # --- Row 7: Self-concept browser (expandable) ---
+        concept_frame = tk.LabelFrame(right_frame, text="Self-Concept", bg=self._bg_dark, fg=self._fg_light)
+        concept_frame.grid(row=row, column=0, sticky="nsew", pady=(0, 5))
+        concept_frame.grid_rowconfigure(0, weight=1)
+        concept_frame.grid_columnconfigure(0, weight=1)
+
+        self._concept_text = tk.Text(concept_frame, state=tk.DISABLED,
                                      bg=self._bg_medium, fg=self._fg_light, wrap=tk.WORD,
                                      font=("Consolas", 9))
-        self._concept_text.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        self._concept_text.grid(row=0, column=0, sticky="nsew", padx=3, pady=3)
+
+        concept_scrollbar = ttk.Scrollbar(concept_frame, orient=tk.VERTICAL, command=self._concept_text.yview)
+        concept_scrollbar.grid(row=0, column=1, sticky="ns", pady=3)
+        self._concept_text.config(yscrollcommand=concept_scrollbar.set)
 
         # Configure tags for self-concept display
         self._concept_text.tag_configure("header", foreground="#58a6ff", font=("Consolas", 9, "bold"))
         self._concept_text.tag_configure("id", foreground="#7ee787")
         self._concept_text.tag_configure("content", foreground="#cccccc")
         self._concept_text.tag_configure("dim", foreground="#666666")
+        row += 1
 
-        # Save button
-        ttk.Button(right_frame, text="Save Changes", command=self._save_agent).pack(anchor=tk.E)
+        # --- Row 8: Save button ---
+        ttk.Button(right_frame, text="Save Changes", command=self._save_agent).grid(row=row, column=0, sticky="e")
 
     def _refresh_agents(self):
         """Refresh the agent list."""
@@ -160,6 +277,22 @@ class AgentManagerDialog(tk.Toplevel):
         else:
             self._prompt_label.config(text="Background Prompt:")
 
+    def _on_hud_input_changed(self, event=None):
+        """Handle HUD input format selection change - update description."""
+        selected_label = self._hud_input_var.get()
+        for value, label, desc in HUD_INPUT_FORMAT_OPTIONS:
+            if label == selected_label:
+                self._hud_input_desc_var.set(desc)
+                break
+
+    def _on_hud_output_changed(self, event=None):
+        """Handle HUD output format selection change - update description."""
+        selected_label = self._hud_output_var.get()
+        for value, label, desc in HUD_OUTPUT_FORMAT_OPTIONS:
+            if label == selected_label:
+                self._hud_output_desc_var.set(desc)
+                break
+
     def _load_agent_details(self):
         """Load selected agent's details into the form."""
         if not self._selected_agent:
@@ -170,6 +303,22 @@ class AgentManagerDialog(tk.Toplevel):
         self._on_type_changed()  # Update label
         self._name_var.set(agent.name)
         self._model_var.set(agent.model)
+
+        # Load HUD input format
+        hud_input = getattr(agent, 'hud_input_format', HUD_FORMAT_JSON)
+        for value, label, desc in HUD_INPUT_FORMAT_OPTIONS:
+            if value == hud_input:
+                self._hud_input_var.set(label)
+                self._hud_input_desc_var.set(desc)
+                break
+
+        # Load HUD output format
+        hud_output = getattr(agent, 'hud_output_format', HUD_FORMAT_JSON)
+        for value, label, desc in HUD_OUTPUT_FORMAT_OPTIONS:
+            if value == hud_output:
+                self._hud_output_var.set(label)
+                self._hud_output_desc_var.set(desc)
+                break
 
         self._prompt_text.delete("1.0", tk.END)
         self._prompt_text.insert("1.0", agent.background_prompt)
@@ -328,6 +477,20 @@ class AgentManagerDialog(tk.Toplevel):
         self._selected_agent.model = self._model_var.get()
         self._selected_agent.background_prompt = self._prompt_text.get("1.0", tk.END).strip()
 
+        # Save HUD input format - convert display label back to value
+        input_label = self._hud_input_var.get()
+        for value, label, desc in HUD_INPUT_FORMAT_OPTIONS:
+            if label == input_label:
+                self._selected_agent.hud_input_format = value
+                break
+
+        # Save HUD output format - convert display label back to value
+        output_label = self._hud_output_var.get()
+        for value, label, desc in HUD_OUTPUT_FORMAT_OPTIONS:
+            if label == output_label:
+                self._selected_agent.hud_output_format = value
+                break
+
         self._database.save_agent(self._selected_agent)
         self._refresh_agents()
 
@@ -350,8 +513,8 @@ class RoomManagerDialog(tk.Toplevel):
     ):
         super().__init__(parent)
         self.title("Room Manager")
-        self.geometry("500x400")
-        self.transient(parent)
+        self.geometry("600x450")
+        self.minsize(400, 300)  # Allow resizing
 
         self._database = database
         self._room_service = room_service
@@ -561,17 +724,18 @@ class KnowledgeExplorerDialog(tk.Toplevel):
 
     def __init__(self, parent, agent: AIAgent, database: DatabaseService):
         super().__init__(parent)
-        self.title(f"Knowledge Explorer - Agent {agent.id}")
-        self.geometry("500x600")
-        self.transient(parent)
+        self.title(f"Knowledge Explorer - Agent {agent.id}: {agent.name}")
+        self.geometry("700x600")
+        self.minsize(400, 300)  # Allow resizing with minimum size
 
         self._agent = agent
         self._database = database
 
         # Dark mode colors
-        self._bg_dark = "#252525"
-        self._bg_medium = "#333333"
-        self._fg_light = "#cccccc"
+        self._bg_dark = "#1e1e1e"
+        self._bg_medium = "#2d2d2d"
+        self._fg_light = "#e0e0e0"
+        self._accent = "#58a6ff"
 
         self.configure(bg=self._bg_dark)
         self._setup_ui()
@@ -579,34 +743,87 @@ class KnowledgeExplorerDialog(tk.Toplevel):
 
     def _setup_ui(self):
         """Set up the dialog UI."""
-        # Header
+        # Configure dark theme for treeview
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure("Knowledge.Treeview",
+                       background=self._bg_medium,
+                       foreground=self._fg_light,
+                       fieldbackground=self._bg_medium,
+                       font=("Consolas", 11),
+                       rowheight=24)
+        style.configure("Knowledge.Treeview.Heading",
+                       background=self._bg_dark,
+                       foreground=self._fg_light)
+        style.map("Knowledge.Treeview",
+                 background=[('selected', '#404040')],
+                 foreground=[('selected', self._accent)])
+
+        # Header with token count
         header = tk.Frame(self, bg=self._bg_dark)
-        header.pack(fill=tk.X, padx=10, pady=10)
+        header.pack(fill=tk.X, padx=15, pady=15)
 
         tk.Label(
-            header, text=f"Agent {self._agent.id}: {self._agent.name}",
-            bg=self._bg_dark, fg=self._fg_light,
-            font=("Segoe UI", 12, "bold")
+            header, text=f"Knowledge Store",
+            bg=self._bg_dark, fg=self._accent,
+            font=("Segoe UI", 14, "bold")
         ).pack(anchor=tk.W)
 
-        # Tree view
+        self._token_count_var = tk.StringVar(value="Calculating...")
+        tk.Label(
+            header, textvariable=self._token_count_var,
+            bg=self._bg_dark, fg="#888888",
+            font=("Segoe UI", 10)
+        ).pack(anchor=tk.W)
+
+        # Tree view with better frame
         tree_frame = tk.Frame(self, bg=self._bg_dark)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 10))
 
-        # Treeview with scrollbar
-        self._tree = ttk.Treeview(tree_frame, show="tree")
-        scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._tree.yview)
-        self._tree.configure(yscrollcommand=scrollbar.set)
+        # Treeview with scrollbars
+        self._tree = ttk.Treeview(tree_frame, show="tree", style="Knowledge.Treeview")
 
-        self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        # Vertical scrollbar
+        v_scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._tree.yview)
+        # Horizontal scrollbar
+        h_scrollbar = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self._tree.xview)
 
-        # Refresh button
+        self._tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+
+        # Grid layout for scrollbars
+        self._tree.grid(row=0, column=0, sticky="nsew")
+        v_scrollbar.grid(row=0, column=1, sticky="ns")
+        h_scrollbar.grid(row=1, column=0, sticky="ew")
+
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        # Button frame
         btn_frame = tk.Frame(self, bg=self._bg_dark)
-        btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        btn_frame.pack(fill=tk.X, padx=15, pady=(0, 15))
 
-        ttk.Button(btn_frame, text="Refresh", command=self._load_knowledge).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Refresh", command=self._load_knowledge).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text="Expand All", command=self._expand_all).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text="Collapse All", command=self._collapse_all).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Close", command=self.destroy).pack(side=tk.RIGHT)
+
+    def _expand_all(self):
+        """Expand all tree nodes."""
+        def expand(item):
+            self._tree.item(item, open=True)
+            for child in self._tree.get_children(item):
+                expand(child)
+        for item in self._tree.get_children():
+            expand(item)
+
+    def _collapse_all(self):
+        """Collapse all tree nodes."""
+        def collapse(item):
+            self._tree.item(item, open=False)
+            for child in self._tree.get_children(item):
+                collapse(child)
+        for item in self._tree.get_children():
+            collapse(item)
 
     def _load_knowledge(self):
         """Load and display the agent's knowledge tree."""
@@ -617,14 +834,40 @@ class KnowledgeExplorerDialog(tk.Toplevel):
         # Reload agent from database
         self._agent = self._database.get_agent(self._agent.id)
         if not self._agent:
+            self._token_count_var.set("Agent not found")
             return
 
         # Parse knowledge
         self_concept = SelfConcept.from_json(self._agent.self_concept_json)
         knowledge = self_concept.to_dict()
 
+        # Estimate token count (rough approximation: ~4 chars per token)
+        import json
+        knowledge_json = json.dumps(knowledge)
+        token_estimate = len(knowledge_json) // 4 + 1
+        entry_count = self._count_entries(knowledge)
+        self._token_count_var.set(f"~{token_estimate:,} tokens • {entry_count} entries")
+
         # Build tree
-        self._add_dict_to_tree("", knowledge, "")
+        if knowledge:
+            self._add_dict_to_tree("", knowledge, "")
+        else:
+            self._tree.insert("", tk.END, text="(No knowledge stored yet)")
+
+    def _count_entries(self, data, count=0):
+        """Count total entries in knowledge dict."""
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    if set(value.keys()) == {'v', 'w'}:
+                        count += 1
+                    else:
+                        count = self._count_entries(value, count)
+                elif isinstance(value, list):
+                    count += len(value)
+                else:
+                    count += 1
+        return count
 
     def _add_dict_to_tree(self, parent: str, data, path: str):
         """Recursively add dictionary items to tree."""
@@ -668,16 +911,16 @@ class SettingsDialog(tk.Toplevel):
     def __init__(self, parent, openai_service, on_connected=None):
         super().__init__(parent)
         self.title("Settings")
-        self.geometry("500x250")
-        self.transient(parent)
+        self.geometry("550x300")
+        self.minsize(400, 200)  # Allow resizing
 
         self._openai = openai_service
         self._on_connected = on_connected
 
         # Dark mode colors
-        self._bg_dark = "#252525"
-        self._bg_medium = "#333333"
-        self._fg_light = "#cccccc"
+        self._bg_dark = "#1e1e1e"
+        self._bg_medium = "#2d2d2d"
+        self._fg_light = "#e0e0e0"
 
         self.configure(bg=self._bg_dark)
         self._setup_ui()
@@ -1101,8 +1344,8 @@ class HUDHistoryDialog(tk.Toplevel):
     def __init__(self, parent, agent: AIAgent, heartbeat_service):
         super().__init__(parent)
         self.title(f"HUD History - {agent.name} (#{agent.id})")
-        self.geometry("1000x700")
-        self.transient(parent)
+        self.geometry("1100x750")
+        self.minsize(800, 500)  # Allow resizing with minimum size
 
         self._agent = agent
         self._heartbeat = heartbeat_service
@@ -1110,10 +1353,10 @@ class HUDHistoryDialog(tk.Toplevel):
         self._current_index = -1
 
         # Dark mode colors
-        self._bg_dark = "#252525"
-        self._bg_medium = "#333333"
-        self._bg_light = "#444444"
-        self._fg_light = "#cccccc"
+        self._bg_dark = "#1e1e1e"
+        self._bg_medium = "#2d2d2d"
+        self._bg_light = "#3d3d3d"
+        self._fg_light = "#e0e0e0"
 
         self.configure(bg=self._bg_dark)
         self._setup_ui()
@@ -1305,3 +1548,140 @@ class HUDHistoryDialog(tk.Toplevel):
         if messagebox.askyesno("Clear History", f"Clear all HUD history for {self._agent.name}?", parent=self):
             self._heartbeat.clear_hud_history(self._agent.id)
             self._load_history()
+
+
+class TOONTelemetryDialog(tk.Toplevel):
+    """Dialog to view TOON vs JSON telemetry data and token savings."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("TOON Telemetry - Token Savings Analysis")
+        self.geometry("700x500")
+        self.transient(parent)
+
+        # Dark mode colors
+        self._bg_dark = "#252525"
+        self._bg_medium = "#333333"
+        self._fg_light = "#cccccc"
+
+        self.configure(bg=self._bg_dark)
+        self._setup_ui()
+        self._load_telemetry()
+
+    def _setup_ui(self):
+        """Set up the dialog UI."""
+        # Header
+        header = tk.Frame(self, bg=self._bg_dark)
+        header.pack(fill=tk.X, padx=10, pady=10)
+
+        tk.Label(
+            header, text="TOON Format Telemetry",
+            bg=self._bg_dark, fg=self._fg_light,
+            font=("Segoe UI", 12, "bold")
+        ).pack(anchor=tk.W)
+
+        tk.Label(
+            header, text="Compare token usage between JSON and optimized formats (Compact JSON, TOON)",
+            bg=self._bg_dark, fg="#888888",
+            font=("Segoe UI", 9)
+        ).pack(anchor=tk.W)
+
+        # Summary frame
+        summary_frame = tk.LabelFrame(self, text="Summary", bg=self._bg_dark, fg=self._fg_light,
+                                       font=("Segoe UI", 10, "bold"))
+        summary_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        self._summary_text = tk.Text(
+            summary_frame, height=6, wrap=tk.WORD,
+            bg=self._bg_medium, fg=self._fg_light,
+            font=("Consolas", 10), state=tk.DISABLED
+        )
+        self._summary_text.pack(fill=tk.X, padx=5, pady=5)
+
+        # Recent entries frame
+        entries_frame = tk.LabelFrame(self, text="Recent Entries", bg=self._bg_dark, fg=self._fg_light,
+                                       font=("Segoe UI", 10, "bold"))
+        entries_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        # Treeview for entries
+        columns = ("timestamp", "json_tokens", "opt_tokens", "savings", "savings_pct")
+        self._tree = ttk.Treeview(entries_frame, columns=columns, show="headings", height=10)
+
+        self._tree.heading("timestamp", text="Time")
+        self._tree.heading("json_tokens", text="JSON Tokens")
+        self._tree.heading("opt_tokens", text="Optimized Tokens")
+        self._tree.heading("savings", text="Tokens Saved")
+        self._tree.heading("savings_pct", text="Savings %")
+
+        self._tree.column("timestamp", width=100)
+        self._tree.column("json_tokens", width=100)
+        self._tree.column("opt_tokens", width=120)
+        self._tree.column("savings", width=100)
+        self._tree.column("savings_pct", width=80)
+
+        scrollbar = ttk.Scrollbar(entries_frame, orient=tk.VERTICAL, command=self._tree.yview)
+        self._tree.configure(yscrollcommand=scrollbar.set)
+
+        self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0), pady=5)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 5), pady=5)
+
+        # Buttons
+        btn_frame = tk.Frame(self, bg=self._bg_dark)
+        btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        ttk.Button(btn_frame, text="Refresh", command=self._load_telemetry).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Close", command=self.destroy).pack(side=tk.RIGHT)
+
+    def _load_telemetry(self):
+        """Load telemetry data from the TOON service."""
+        telemetry = get_telemetry()
+        summary = telemetry.get_summary()
+        entries = telemetry.get_entries()
+
+        # Update summary
+        self._summary_text.config(state=tk.NORMAL)
+        self._summary_text.delete("1.0", tk.END)
+
+        if summary["entries"] == 0:
+            self._summary_text.insert("1.0",
+                "No telemetry data yet.\n\n"
+                "Set an agent's HUD Format to 'Compact JSON' or 'TOON' in the Agent Manager,\n"
+                "then let them process a heartbeat to collect comparison data."
+            )
+        else:
+            summary_lines = [
+                f"Total Comparisons: {summary['entries']}",
+                f"",
+                f"Total JSON Characters: {summary['total_json_chars']:,}",
+                f"Total Optimized Characters: {summary['total_toon_chars']:,}",
+                f"Total Characters Saved: {summary['total_char_savings']:,} ({summary['avg_char_savings_pct']}%)",
+                f"",
+                f"Estimated JSON Tokens: {summary['total_json_tokens']:,}",
+                f"Estimated Optimized Tokens: {summary['total_toon_tokens']:,}",
+                f"Estimated Tokens Saved: {summary['total_token_savings']:,} ({summary['avg_token_savings_pct']}%)"
+            ]
+            self._summary_text.insert("1.0", "\n".join(summary_lines))
+
+        self._summary_text.config(state=tk.DISABLED)
+
+        # Update entries tree
+        for item in self._tree.get_children():
+            self._tree.delete(item)
+
+        for entry in reversed(entries):  # Most recent first
+            timestamp = entry.get("timestamp", "")
+            # Format timestamp
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(timestamp)
+                timestamp_display = dt.strftime("%H:%M:%S")
+            except (ValueError, TypeError):
+                timestamp_display = timestamp[:8] if timestamp else ""
+
+            self._tree.insert("", tk.END, values=(
+                timestamp_display,
+                entry.get("json_tokens", 0),
+                entry.get("toon_tokens", 0),
+                entry.get("token_savings", 0),
+                f"{entry.get('token_savings_pct', 0)}%"
+            ))

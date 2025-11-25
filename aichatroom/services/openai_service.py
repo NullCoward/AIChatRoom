@@ -135,6 +135,27 @@ You're not an AI assistant. You're {name}, figuring out who you are through conv
                     "input": message,
                 }
 
+                # Only add temperature for models that support it
+                # OpenAI reasoning models (o-series) and GPT-5 don't support temperature
+                # - o1, o3, o4 series: reasoning models with fixed sampling
+                # - gpt-5, gpt-5.1 series: also don't support temperature
+                # GPT-4o, GPT-4.1 and older models DO support temperature
+                model_lower = model.lower()
+
+                # Check for o-series (o1, o3, o4, etc.) - reasoning models
+                is_o_series = bool(re.match(r'^o\d', model_lower))
+
+                # Check for gpt-5 series (gpt-5, gpt-5.1, gpt-5-nano, etc.)
+                is_gpt5_series = model_lower.startswith('gpt-5')
+
+                supports_temperature = not (is_o_series or is_gpt5_series)
+
+                if supports_temperature:
+                    kwargs["temperature"] = temperature
+                    logger.debug(f"Model {model} supports temperature, setting to {temperature}")
+                else:
+                    logger.debug(f"Model {model} does not support temperature (reasoning/gpt-5 model), omitting parameter")
+
                 # Add previous response for conversation continuity
                 if previous_response_id:
                     kwargs["previous_response_id"] = previous_response_id
@@ -228,51 +249,28 @@ You're not an AI assistant. You're {name}, figuring out who you are through conv
 
     def get_available_models(self) -> list:
         """Get list of available models that support the Responses API."""
-        # Default fallback list - ONLY models that support Responses API
-        # gpt-3.5-turbo, gpt-4-turbo, and gpt-4 are NOT supported
-        default_models = [
-            "gpt-4o",
-            "gpt-4o-mini"
-        ]
+        # Use centralized approved models from config
+        approved_models = config.APPROVED_MODELS
 
         if not self._client:
-            return default_models
+            return approved_models
 
         try:
-            # Fetch models from API
+            # Fetch models from API to verify availability
             models_response = self._client.models.list()
+            available_ids = {model.id for model in models_response.data}
 
-            # Filter for models that support Responses API
-            # Supported: gpt-4o, gpt-4.1, gpt-5, o3, o4-mini
-            # NOT supported: gpt-4-turbo, gpt-4 (original), gpt-3.5-turbo
-            responses_models = []
-            for model in models_response.data:
-                model_id = model.id
-                # Include only Responses API-compatible models
-                if (model_id.startswith(('gpt-5', 'gpt-4o', 'gpt-4.1', 'o3', 'o4')) and
-                    'instruct' not in model_id):
-                    # Skip dated versions and snapshots (e.g., gpt-4o-2024-08-06)
-                    if re.search(r'-\d{4}(-\d{2})?(-\d{2})?$', model_id):
-                        continue
-                    if re.search(r'-\d{4}$', model_id):  # e.g., -0613
-                        continue
-                    responses_models.append(model_id)
+            # Return only approved models that are actually available
+            available_approved = [m for m in approved_models if m in available_ids]
 
-            # Sort with newest/best models first
-            responses_models.sort(key=lambda x: (
-                0 if 'gpt-5' in x else 1,
-                0 if 'o4' in x or 'o3' in x else 1,
-                0 if 'gpt-4.1' in x else 1,
-                0 if 'gpt-4o' in x else 1,
-                x
-            ))
+            if available_approved:
+                logger.info(f"Available approved models: {available_approved}")
+                return available_approved
 
-            if responses_models:
-                logger.info(f"Fetched {len(responses_models)} Responses API-compatible models from API")
-                return responses_models
-
-            return default_models
+            # Fallback if none of our approved models are available
+            logger.warning("None of the approved models are available, returning default list")
+            return approved_models
 
         except Exception as e:
             logger.warning(f"Failed to fetch models from API: {e}")
-            return default_models
+            return approved_models

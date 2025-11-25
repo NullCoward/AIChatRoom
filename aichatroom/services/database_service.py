@@ -184,7 +184,12 @@ class DatabaseService:
             ("room_wpm", "INTEGER DEFAULT 80"),
             ("agent_type", "TEXT DEFAULT 'persona'"),
             ("can_create_agents", "INTEGER DEFAULT 0"),
-            ("sleep_until", "TEXT DEFAULT NULL")
+            ("sleep_until", "TEXT DEFAULT NULL"),
+            ("hud_format", "TEXT DEFAULT 'json'"),  # Legacy - migrated to split fields
+            ("hud_input_format", "TEXT DEFAULT 'json'"),
+            ("hud_output_format", "TEXT DEFAULT 'json'"),
+            ("token_budget", "INTEGER DEFAULT 10000"),
+            ("memory_allocations_json", "TEXT DEFAULT ''")
         ]
 
         for col_name, col_def in new_agent_columns:
@@ -255,10 +260,12 @@ class DatabaseService:
                 cursor.execute('''
                     INSERT INTO agents (name, background_prompt, previous_response_id,
                                        created_at, agent_type, model, temperature, is_architect,
+                                       hud_input_format, hud_output_format,
                                        status, total_tokens_used, next_heartbeat_offset,
                                        self_concept_json, room_billboard, heartbeat_interval,
-                                       room_wpm, can_create_agents, sleep_until)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       room_wpm, can_create_agents, sleep_until,
+                                       token_budget, memory_allocations_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     agent.name,
                     agent.background_prompt,
@@ -268,37 +275,8 @@ class DatabaseService:
                     agent.model,
                     agent.temperature,
                     int(agent.is_architect),
-                    agent.status,
-                    agent.total_tokens_used,
-                    agent.next_heartbeat_offset,
-                    agent.self_concept_json,
-                    agent.room_billboard,
-                    agent.heartbeat_interval,
-                    agent.room_wpm,
-                    int(agent.can_create_agents),
-                    agent.sleep_until.isoformat() if agent.sleep_until else None
-                ))
-                agent.id = cursor.lastrowid
-                logger.info(f"Created {agent.agent_type} '{agent.name}' with ID {agent.id}")
-            else:
-                # Update existing agent
-                cursor.execute('''
-                    UPDATE agents SET name = ?, background_prompt = ?,
-                                     previous_response_id = ?, agent_type = ?,
-                                     model = ?, temperature = ?, is_architect = ?,
-                                     status = ?, total_tokens_used = ?,
-                                     next_heartbeat_offset = ?, self_concept_json = ?,
-                                     room_billboard = ?, heartbeat_interval = ?,
-                                     room_wpm = ?, can_create_agents = ?, sleep_until = ?
-                    WHERE id = ?
-                ''', (
-                    agent.name,
-                    agent.background_prompt,
-                    agent.previous_response_id,
-                    agent.agent_type,
-                    agent.model,
-                    agent.temperature,
-                    int(agent.is_architect),
+                    agent.hud_input_format,
+                    agent.hud_output_format,
                     agent.status,
                     agent.total_tokens_used,
                     agent.next_heartbeat_offset,
@@ -308,6 +286,45 @@ class DatabaseService:
                     agent.room_wpm,
                     int(agent.can_create_agents),
                     agent.sleep_until.isoformat() if agent.sleep_until else None,
+                    agent.token_budget,
+                    agent.memory_allocations_json
+                ))
+                agent.id = cursor.lastrowid
+                logger.info(f"Created {agent.agent_type} '{agent.name}' with ID {agent.id}")
+            else:
+                # Update existing agent
+                cursor.execute('''
+                    UPDATE agents SET name = ?, background_prompt = ?,
+                                     previous_response_id = ?, agent_type = ?,
+                                     model = ?, temperature = ?, is_architect = ?,
+                                     hud_input_format = ?, hud_output_format = ?,
+                                     status = ?, total_tokens_used = ?,
+                                     next_heartbeat_offset = ?, self_concept_json = ?,
+                                     room_billboard = ?, heartbeat_interval = ?,
+                                     room_wpm = ?, can_create_agents = ?, sleep_until = ?,
+                                     token_budget = ?, memory_allocations_json = ?
+                    WHERE id = ?
+                ''', (
+                    agent.name,
+                    agent.background_prompt,
+                    agent.previous_response_id,
+                    agent.agent_type,
+                    agent.model,
+                    agent.temperature,
+                    int(agent.is_architect),
+                    agent.hud_input_format,
+                    agent.hud_output_format,
+                    agent.status,
+                    agent.total_tokens_used,
+                    agent.next_heartbeat_offset,
+                    agent.self_concept_json,
+                    agent.room_billboard,
+                    agent.heartbeat_interval,
+                    agent.room_wpm,
+                    int(agent.can_create_agents),
+                    agent.sleep_until.isoformat() if agent.sleep_until else None,
+                    agent.token_budget,
+                    agent.memory_allocations_json,
                     agent.id
                 ))
                 logger.debug(f"Updated {agent.agent_type} '{agent.name}' (ID {agent.id})")

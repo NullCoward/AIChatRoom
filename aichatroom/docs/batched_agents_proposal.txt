@@ -1,0 +1,638 @@
+================================================================================
+BATCHED AGENTS PROPOSAL
+AI Chat Room - Token Optimization Through Agent Batching
+================================================================================
+
+EXECUTIVE SUMMARY
+-----------------
+This proposal outlines a system to batch multiple AI agent heartbeats into
+single API calls, significantly reducing token usage by eliminating redundant
+OS-level HUD content. Instead of each agent receiving its own complete HUD
+with duplicate system instructions, we batch agents together with shared
+OS instructions and individual agent segments.
+
+================================================================================
+CURRENT ARCHITECTURE
+================================================================================
+
+1. HEARTBEAT SERVICE (heartbeat_service.py)
+-------------------------------------------
+- Uses QTimer with configurable interval (default: 5 seconds from config)
+- Processes agents sequentially in each tick via `_heartbeat_tick()`
+- Each agent gets its own complete HUD built via `_hud.build_hud_multi_room()`
+- Each agent makes a separate API call via `_openai.send_message()`
+- Rate limiting per agent with `should_heartbeat()` check
+
+Current Flow:
+  Timer Tick -> For Each Agent:
+    1. Check should_heartbeat()
+    2. Build complete HUD (OS + agent-specific content)
+    3. Send to OpenAI API (individual call)
+    4. Parse response and apply actions
+
+2. HUD SERVICE (hud_service.py)
+-------------------------------
+- `build_hud_multi_room()` creates complete HUD per agent
+- HUD Structure:
+  * System Directives (OS-level, same for all agents)
+  * Agent Meta/Identity section
+  * Available Actions list
+  * Memory Allocations (knowledge, recent_actions, rooms)
+  * Room Messages (per-room content)
+  * Budget warnings if applicable
+
+- Token counting via `count_tokens()` method
+- Memory allocation system divides budget among:
+  * knowledge (30% default)
+  * recent_actions (10% default)
+  * rooms (60% default)
+
+3. OPENAI SERVICE (openai_service.py)
+-------------------------------------
+- `send_message(hud_content, model, temperature)` sends to API
+- Uses Responses API format with system/user message structure
+- Handles model-specific configurations (o1 models have special handling)
+- Returns parsed AgentResponse with room_messages and actions
+
+4. AGENT MODEL (ai_agent.py)
+----------------------------
+Key fields per agent:
+- token_budget: Individual budget (default 10000)
+- memory_allocations: Dict of allocation percentages
+- model: OpenAI model ID
+- temperature: Model temperature
+- last_heartbeat: Timestamp tracking
+- heartbeat_interval: Per-agent interval
+
+================================================================================
+PROPOSED CHANGES
+================================================================================
+
+1. BATCHED HEARTBEAT SYSTEM
+---------------------------
+
+New heartbeat interval: 1 second (down from 5)
+
+New Flow:
+  Timer Tick (1s) ->
+    1. Collect all agents due for heartbeat into queue
+    2. If queue is EMPTY: return immediately (skip this tick, no API call)
+    3. Group agents by model (separate batches per model)
+    4. For each model group:
+       a. Build shared OS section once
+       b. Build individual agent segments
+       c. Create batches (split if exceeds context limit)
+    5. Send ALL batches in PARALLEL (asyncio.gather)
+    6. For each batch response:
+       a. Parse multi-agent response
+       b. Check agent still exists before applying
+       c. Distribute actions to agents (skip deleted gracefully)
+
+Agent Queueing:
+- Agents that become ready between heartbeats queue for next tick
+- Queue processed in FIFO order (first-in, first-out)
+- Batch fills up to context limit, remainder waits for next tick
+
+2. CONTEXT LIMIT AT HEARTBEAT LEVEL
+-----------------------------------
+
+Current: token_budget per agent (10000 default)
+Proposed: max_batch_context at heartbeat/batch level
+
+New config constants needed:
+  MAX_BATCH_CONTEXT = 120000  # Total tokens per batch (model dependent)
+  BATCH_RESERVE_TOKENS = 5000 # Reserve for response
+
+Batching logic:
+  accumulated_tokens = os_section_tokens
+  batch = []
+  for agent in queue:
+      agent_segment_tokens = calculate_agent_segment(agent)
+      if accumulated_tokens + agent_segment_tokens > MAX_BATCH_CONTEXT:
+          break  # Send current batch, agent waits for next
+      batch.append(agent)
+      accumulated_tokens += agent_segment_tokens
+
+  send_batch(batch)
+
+3. BATCHED HUD STRUCTURE
+------------------------
+
+DESIGN PRINCIPLE: Each agent is STATELESS. Every agent in a batch receives their
+COMPLETE individual data - exactly the same content they would receive if
+processed individually. We are ONLY deduplicating the shared HUD OS section.
+
+Current HUD (sent per agent):
+```
+================================================================================
+HUD OS SECTION (DUPLICATED FOR EVERY AGENT - THIS IS THE WASTE)
+================================================================================
+[System Directives]
+[Available Actions Reference]
+[Response Format Instructions]
+
+================================================================================
+AGENT-SPECIFIC SECTION (UNIQUE PER AGENT)
+================================================================================
+[Agent Meta/Identity]
+[Memory Allocations]
+[Knowledge Store - complete]
+[Recent Actions - complete]
+[Room Messages - all joined rooms, complete]
+[Budget Status]
+```
+
+Proposed Batched HUD:
+```
+================================================================================
+HUD OS (SENT ONCE PER BATCH)
+================================================================================
+[System Directives - sent ONCE]
+[Available Actions Reference - sent ONCE]
+[Response Format Instructions - sent ONCE]
+
+================================================================================
+BATCH SECURITY NOTICE
+================================================================================
+This batch contains multiple independent agents. CRITICAL REQUIREMENTS:
+- Each agent's data is CONFIDENTIAL to that agent only
+- Do NOT cross-reference information between agents
+- Do NOT mention other agents' knowledge, messages, or actions
+- Treat each agent as running in COMPLETE ISOLATION
+- Room access is permission-based - agents only see rooms they've joined
+- Agents must NEVER be aware of each other's existence
+- Generate a SEPARATE, INDEPENDENT response for each agent
+
+================================================================================
+AGENTS
+================================================================================
+Each agent below receives their COMPLETE individual state. Process each one
+independently and generate separate responses.
+
+--------------------------------------------------------------------------------
+AGENT 1: [Agent Name] (ID: 3, Model: gpt-4o-mini)
+--------------------------------------------------------------------------------
+
+>>> IDENTITY <<<
+Name: [Agent Name]
+Type: persona
+Role: [Agent role/description]
+Created: [timestamp]
+
+>>> MEMORY ALLOCATIONS <<<
+Token Budget: 10000
+Allocations: knowledge=30%, recent_actions=10%, rooms=60%
+
+>>> KNOWLEDGE STORE <<<
+project_goal: "Build a collaborative AI system"
+user_preferences: "Prefers concise responses"
+[...all key/value pairs...]
+
+>>> RECENT ACTIONS <<<
+[2024-01-15 10:30:15] knowledge_set: project_goal = "Build a collaborative AI system"
+[2024-01-15 10:31:22] join_room: general
+[...sliding window of recent actions...]
+
+>>> ROOMS <<<
+
+--- Room: general (ID: 2) ---
+[Alice @ 10:30:01] Hello everyone!
+[Bob @ 10:30:45] Hi Alice, how's it going?
+[...complete message history per allocation...]
+
+--- Room: projects (ID: 5) ---
+[Charlie @ 10:25:00] Let's discuss the roadmap
+[...complete message history per allocation...]
+
+>>> BUDGET STATUS <<<
+Current Usage: 7500/10000 tokens (75%)
+Status: OK
+
+--------------------------------------------------------------------------------
+AGENT 2: [Agent Name] (ID: 7, Model: gpt-4o)
+--------------------------------------------------------------------------------
+
+>>> IDENTITY <<<
+Name: [Agent Name]
+Type: bot
+Role: [Agent role/description]
+Created: [timestamp]
+
+>>> MEMORY ALLOCATIONS <<<
+Token Budget: 15000
+Allocations: knowledge=40%, recent_actions=10%, rooms=50%
+
+>>> KNOWLEDGE STORE <<<
+specialty: "Data analysis"
+[...all key/value pairs...]
+
+>>> RECENT ACTIONS <<<
+[2024-01-15 10:29:00] knowledge_set: specialty = "Data analysis"
+[...sliding window of recent actions...]
+
+>>> ROOMS <<<
+
+--- Room: general (ID: 2) ---
+[Alice @ 10:30:01] Hello everyone!
+[Bob @ 10:30:45] Hi Alice, how's it going?
+[...complete message history per allocation...]
+
+>>> BUDGET STATUS <<<
+Current Usage: 12000/15000 tokens (80%)
+Status: WARNING - Approaching budget limit
+
+... (additional agents as batch context allows)
+
+================================================================================
+RESPONSE FORMAT
+================================================================================
+Respond with a JSON object containing SEPARATE responses for EACH agent:
+{
+  "agents": [
+    {
+      "agent_id": 3,
+      "room_messages": [
+        {"room_id": 2, "content": "Hello everyone, nice to meet you!"},
+        {"room_id": 5, "content": "I've reviewed the roadmap, looks good."}
+      ],
+      "actions": [
+        {"type": "knowledge_set", "key": "meeting_notes", "value": "Discussed roadmap"}
+      ]
+    },
+    {
+      "agent_id": 7,
+      "room_messages": [
+        {"room_id": 2, "content": "Hi there! Ready to help with data analysis."}
+      ],
+      "actions": []
+    }
+  ]
+}
+```
+
+KEY POINT: The ONLY difference between batched and individual processing is that
+the HUD OS section is sent once instead of N times. Each agent's individual
+segment contains 100% of the data they would receive in a solo heartbeat.
+
+4. SECURITY ISOLATION
+---------------------
+
+Key security requirements for batched processing:
+
+a) Data Isolation:
+   - Each agent's knowledge is private
+   - Room messages only visible to agents in that room
+   - No cross-agent data leakage in responses
+
+b) Response Isolation:
+   - Model must respond separately for each agent
+   - No agent should reference another agent's context
+   - Actions apply only to the originating agent
+
+c) HUD Instructions:
+   - Clear security notice at OS level
+   - Explicit isolation requirements
+   - Response format enforces separation
+
+d) Validation:
+   - Post-response validation that actions match agent permissions
+   - Room message delivery only to joined rooms
+   - Knowledge operations only affect own knowledge
+
+================================================================================
+IMPLEMENTATION PLAN
+================================================================================
+
+PHASE 1: Config and Data Structures
+------------------------------------
+Files: config.py, models/ai_agent.py
+
+1. Add new config constants:
+   - HEARTBEAT_INTERVAL = 1.0 (seconds)
+   - BATCH_RESERVE_TOKENS = 5000
+   - BATCH_SECURITY_NOTICE (text constant)
+
+   - MODEL_CONTEXT_LIMITS = {
+       "gpt-4o": 128000,
+       "gpt-4o-mini": 128000,
+       "gpt-4-turbo": 128000,
+       "gpt-4": 8192,
+       "gpt-3.5-turbo": 16385,
+       "o1-preview": 128000,
+       "o1-mini": 128000,
+     }
+
+2. Add batch-related fields (if needed):
+   - Agent queue tracking
+   - Batch membership tracking
+
+PHASE 2: HUD Service Updates
+----------------------------
+Files: services/hud_service.py
+
+1. FIRST: Standardize existing HUD formatting for AI readability
+   - Review current build_hud_multi_room output
+   - Establish consistent section delimiter style (use === for major, --- for minor)
+   - Use consistent label format (>>> SECTION_NAME <<<)
+   - Ensure all data blocks have clear start/end markers
+   - Remove inconsistent formatting, comments, or markers
+
+2. New method: build_os_section()
+   - Extract shared OS content from build_hud_multi_room
+   - System directives, available actions, response format instructions
+   - NOTE: Security notice is added separately by build_batched_hud when batch size > 1
+   - Returns (os_content, token_count)
+
+3. New method: build_agent_segment(agent)
+   - Agent-specific content only (no OS content)
+   - Sections in order: Identity, Memory Allocations, Knowledge Store,
+     Recent Actions, Rooms, Budget Status
+   - Uses standardized formatting from step 1
+   - Returns (segment_content, token_count)
+
+4. New method: build_batched_hud(agents)
+   - Calls build_os_section() once
+   - If len(agents) > 1: adds BATCH SECURITY NOTICE
+   - Calls build_agent_segment() for each agent
+   - Combines with proper AGENTS section wrapper
+   - Returns complete batched HUD
+
+5. Update token counting for batch awareness
+
+PHASE 3: Heartbeat Service Refactor
+-----------------------------------
+Files: services/heartbeat_service.py
+
+1. Change timer interval to 1 second
+
+2. New method: collect_due_agents()
+   - Gather all agents ready for heartbeat
+   - Return ordered queue
+
+3. New method: group_agents_by_model(queue)
+   - Group agents in queue by their model field
+   - Return dict of model -> list of agents
+
+4. New method: batch_agents(agents, model)
+   - Takes agents list and model (for context limit lookup)
+   - Calculate token costs using MODEL_CONTEXT_LIMITS[model]
+   - Fill batches to context limit
+   - Return list of batches
+
+5. Refactor _heartbeat_tick():
+   - Collect due agents via collect_due_agents()
+   - If queue is empty: return immediately (no processing)
+   - Group agents by model via group_agents_by_model()
+   - For each model group, create batches via batch_agents()
+   - Send ALL batches in parallel (asyncio.gather or similar)
+   - For each batch response:
+     * Parse multi-agent response
+     * Check if agent still exists before applying
+     * Distribute actions to agents (skip deleted agents gracefully)
+
+6. New method: parse_batched_response(response)
+   - Parse JSON with multiple agent responses
+   - Validate agent IDs
+   - Return dict of agent_id -> response
+
+7. New method: apply_batched_responses(batch, parsed)
+   - For each agent in batch
+   - Apply their specific actions
+   - Send their specific messages
+
+PHASE 4: OpenAI Service Updates
+-------------------------------
+Files: services/openai_service.py
+
+1. New method: send_batch(batched_hud, model, temperature)
+   - Similar to send_message but expects batched response format
+   - Returns raw response for batched parsing
+
+2. Update response parsing for batch format
+
+PHASE 5: Testing and Validation
+-------------------------------
+
+1. Unit tests:
+   - OS section extraction
+   - Agent segment building
+   - Batch size calculation
+   - Response parsing
+
+2. Integration tests:
+   - Multi-agent batch processing
+   - Security isolation verification
+   - Context limit enforcement
+   - Queue processing
+
+3. Security tests:
+   - Cross-agent data leakage
+   - Permission validation
+   - Room isolation
+
+================================================================================
+TOKEN SAVINGS ESTIMATE
+================================================================================
+
+WHAT WE SAVE: Only the HUD OS section duplication. Each agent's individual
+data remains unchanged.
+
+Current HUD structure (per agent):
+- HUD OS Section: ~2000 tokens (system directives, actions, response format)
+- Agent-Specific Data: ~3000-8000 tokens (varies by memory usage)
+- Total per agent: ~5000-10000 tokens
+
+CURRENT SYSTEM (individual calls):
+With 5 agents, 5-second heartbeat interval:
+- Per heartbeat tick: 5 agents * 7000 avg = 35,000 tokens
+- 12 ticks per minute: 35,000 * 12 = 420,000 tokens/minute
+- Note: Each agent sends HUD OS (2000 tokens) = 10,000 tokens of duplication per tick
+
+BATCHED SYSTEM (shared OS):
+With 5 agents, all batched together:
+- HUD OS: 2000 tokens (sent ONCE)
+- Security Notice: ~200 tokens (sent ONCE)
+- Agent Segments: 5 * 5000 avg = 25,000 tokens (FULL data for each agent)
+- Batch total: 2200 + 25,000 = 27,200 tokens per batch
+- 12 batches per minute: 27,200 * 12 = 326,400 tokens/minute
+
+SAVINGS WITH 5 AGENTS:
+- Current: 420,000 tokens/minute
+- Batched: 326,400 tokens/minute
+- Saved: 93,600 tokens/minute (22% reduction)
+- Savings = (N-1) * OS_tokens per batch = 4 * 2000 = 8000 tokens per batch
+
+SAVINGS WITH 10 AGENTS:
+- Current: 10 * 7000 * 12 = 840,000 tokens/minute
+- Batched: (2200 + 10*5000) * 12 = 52,200 * 12 = 626,400 tokens/minute
+- Saved: 213,600 tokens/minute (25% reduction)
+- Savings = (N-1) * OS_tokens per batch = 9 * 2000 = 18,000 tokens per batch
+
+SCALING FORMULA:
+  tokens_saved_per_batch = (num_agents - 1) * HUD_OS_tokens
+  percentage_saved = (num_agents - 1) * HUD_OS_tokens / total_batch_tokens
+
+The more agents batched together, the greater the savings. With a 2000-token OS:
+- 2 agents: Save 2000 tokens (14% reduction)
+- 5 agents: Save 8000 tokens (22% reduction)
+- 10 agents: Save 18000 tokens (25% reduction)
+- 20 agents: Save 38000 tokens (28% reduction)
+
+ADDITIONAL BENEFITS:
+- Fewer API calls (reduces latency overhead and rate limit pressure)
+- Single response parsing (simpler error handling)
+- 1-second responsiveness vs 5-second intervals
+- Better throughput as agent count scales
+
+================================================================================
+RISKS AND MITIGATIONS
+================================================================================
+
+1. Model Response Quality
+   Risk: Model may confuse agents or leak data between them
+   Mitigation: Strong security instructions, response validation, testing
+
+2. Batch Size Limits
+   Risk: Too many agents may exceed context
+   Mitigation: Dynamic batching based on context limit, queue overflow handling
+
+3. Response Parsing Complexity
+   Risk: Multi-agent JSON response may have errors
+   Mitigation: Robust parsing, fallback to individual calls on failure
+
+4. Latency for Large Batches
+   Risk: Single large call may be slower than parallel small calls
+   Mitigation: Monitor latency, consider parallel batch processing
+
+5. Error Handling
+   Risk: One agent error could affect entire batch
+   Mitigation: Per-agent error handling, partial response processing
+
+================================================================================
+DESIGN DECISIONS
+================================================================================
+
+1. DIFFERENT MODELS IN BATCH:
+   Decision: Separate batches per model.
+   Rationale: Each model has different context limits, pricing, and capabilities.
+   Mixing models in one batch would require using the most restrictive context
+   limit and could cause inconsistent behavior. Grouping by model is cleaner.
+
+2. SINGLE AGENT CASE:
+   Decision: Use same batched format even for 1 agent.
+   Rationale: Keeps code paths consistent. The only difference is the security
+   notice can be omitted (or simplified) when batch size is 1 since there's
+   no cross-agent isolation concern.
+
+3. BATCH CONTEXT LIMIT:
+   Decision: Model-aware context limits.
+   Rationale: Different models have different limits (gpt-4o: 128k, gpt-4o-mini:
+   128k, gpt-3.5-turbo: 16k). Store limits in config per model.
+
+4. EMPTY QUEUE HANDLING:
+   Decision: Skip heartbeat tick entirely when no agents are due.
+   Rationale: No point building HUD or making API calls if no agents need
+   processing. Return immediately from _heartbeat_tick() when queue is empty.
+   This saves resources and avoids unnecessary processing every second.
+
+5. TEMPERATURE HANDLING:
+   Decision: Use default temperature for all agents in batched mode.
+   Rationale: Simplifies batching - no need to group by model+temperature.
+   Per-agent temperature can be added later if needed. Use DEFAULT_TEMPERATURE
+   from config (0.7) for all batch API calls.
+
+6. QUEUE PRIORITY:
+   Decision: FIFO (first-in, first-out) ordering.
+   Rationale: Simple and fair. Agents are processed in order they become due.
+   Priority-based ordering can be added later if needed.
+
+7. PARALLEL BATCH PROCESSING:
+   Decision: Yes, when context overflow creates multiple batches within a
+   model group, send all batches in parallel.
+   Rationale: If we have 10 agents but can only fit 5 per batch due to context
+   limits, don't wait for batch 1 to complete before sending batch 2. Send
+   both simultaneously to maximize throughput. Use asyncio or threading.
+
+8. AGENT DELETION MID-BATCH:
+   Decision: Skip gracefully.
+   Rationale: If an agent is deleted after being collected but before their
+   response is applied, simply skip applying their actions. Log a warning
+   and continue with remaining agents. No error, no retry.
+
+================================================================================
+OPEN QUESTIONS
+================================================================================
+
+(All questions resolved - moved to Design Decisions above)
+
+================================================================================
+RECOMMENDATION
+================================================================================
+
+Implement in phases as described, starting with Phase 1 (config) and Phase 2
+(HUD refactoring) which have lowest risk. This allows testing the batched HUD
+structure before connecting it to the heartbeat system.
+
+Priority order:
+1. Config constants and batch HUD structure
+2. HUD service refactoring (build_os_section, build_agent_segment)
+3. Heartbeat service batching logic
+4. Response parsing and distribution
+5. Testing and security validation
+
+Estimated effort: 2-3 development sessions for core implementation,
+plus additional session for testing and refinement.
+
+================================================================================
+APPENDIX A: HUD FORMATTING STANDARDS
+================================================================================
+
+Consistent formatting improves AI parsing and reduces ambiguity. Use these
+standards throughout all HUD content.
+
+DELIMITER HIERARCHY:
+--------------------
+Level 1 (Major sections):    ======== (80 chars)
+Level 2 (Agent boundaries):  -------- (80 chars)
+Level 3 (Subsections):       >>> SECTION_NAME <<<
+Level 4 (Sub-subsections):   --- Label ---
+
+SECTION MARKERS:
+----------------
+>>> IDENTITY <<<
+>>> MEMORY ALLOCATIONS <<<
+>>> KNOWLEDGE STORE <<<
+>>> RECENT ACTIONS <<<
+>>> ROOMS <<<
+>>> BUDGET STATUS <<<
+
+DATA FORMATS:
+-------------
+Key-value pairs:     key: "value" or key: value
+Timestamps:          [YYYY-MM-DD HH:MM:SS]
+Messages:            [Sender @ HH:MM:SS] Message content
+Actions:             [timestamp] action_type: details
+Percentages:         XX% (no decimals unless needed)
+Token counts:        XXXX/YYYY tokens (XX%)
+
+SPACING:
+--------
+- One blank line between major sections
+- No blank line between subsection header and content
+- One blank line between subsection content blocks
+- Consistent indentation (2 spaces for nested content)
+
+EXAMPLE WELL-FORMATTED SECTION:
+-------------------------------
+>>> KNOWLEDGE STORE <<<
+project_name: "AI Chat Room"
+version: "2.0"
+last_updated: "2024-01-15"
+goals: "Create collaborative multi-agent system"
+
+>>> RECENT ACTIONS <<<
+[2024-01-15 10:30:15] knowledge_set: project_name = "AI Chat Room"
+[2024-01-15 10:31:22] join_room: general (ID: 2)
+[2024-01-15 10:32:00] send_message: room=2, content="Hello!"
+
+================================================================================
