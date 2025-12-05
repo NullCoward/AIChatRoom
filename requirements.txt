@@ -1,0 +1,9 @@
+openai
+httpx
+requests
+fastapi
+uvicorn[standard]
+pydantic
+keyring
+Pillow
+customtkinter

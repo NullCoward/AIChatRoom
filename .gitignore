@@ -28,3 +28,9 @@ Thumbs.db
 
 # Subdirectory projects (managed separately)
 ascii-runner/
+
+# Build artifacts
+build/
+dist/
+*.spec
+nul

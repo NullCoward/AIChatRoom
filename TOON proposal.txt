@@ -1,0 +1,267 @@
+Proposal: Migrating Your HUD to TOON (Token-Oriented Object Notation)
+1. Goal
+
+You want:
+
+A 50k-token persistent HUD that the LLM can ingest each turn
+
+With high semantic density, minimal overhead, and maximally efficient attention allocation
+
+While still being machine-parseable, LLM-friendly, and supporting patch-style updates (set, append, delete, etc.)
+
+TOON is a good fit because it reduces:
+
+Quotations
+
+Verbose JSON punctuation
+
+Repeated field names
+
+Deep object nesting overhead
+
+And it preserves:
+
+Deterministic structure
+
+Predictability for LLM parsing
+
+Structured patching (with a mapping back to JSON paths)
+
+2. What TOON Is (Developer View)
+
+TOON (Token-Oriented Object Notation) is:
+
+A positional, structural notation where you declare the keys at the top and then only provide values.
+
+Brackets/braces minimized to reduce overhead.
+
+Arrays defined by size first, then contents.
+
+Strings unquoted unless ambiguous.
+
+Designed so LLMs can convert to/from JSON easily.
+
+Core Syntax
+object{field1,field2,field3}: value1, value2, {subobject…}
+array[N]: item1, item2, …
+nested_object{a,b{c,d},e}: …
+
+Mental Model
+
+Think “protocol buffers meets JSON but optimized for LLMs”.
+You explicitly define the shape first (field list), then the values.
+
+Why LLMs handle it well
+
+Structure is linear and predictable.
+
+Less delimiter noise → more tokens available for semantic content.
+
+Models easily learn the field-order contract.
+
+3. Recommended HUD Structure in TOON
+
+This is the clean, static contract.
+No AI-authored knowledge.
+No history data.
+No runtime content.
+Just the shape.
+
+Everything AI-editable lives under self.knowledge.*.
+
+TOON HUD (SKELETON / CONTRACT)
+system{directives,mode,rooms_are_memory}: 
+  "", default, true
+
+self.identity{id,name,model,seed}: 
+  0, "", "", ""
+
+self.knowledge{ai,character}: 
+  {ai_core{},ai_memory{},ai_org{}}, 
+  {char_profile{},char_mood{},char_memories[]}
+
+self.knowledge.ai.ai_core{goals[],strategies[],policies[]}: 
+  [], [], []
+
+self.knowledge.ai.ai_memory{memory_model, load_state, consolidation_rules}: 
+  {tiers{},budget{},layout{}},
+  {current{},history{}},
+  {triggers{},methods{}}
+
+self.knowledge.ai.ai_org{divisions{},activation_sequence[],agent_index[]}: 
+  {}, [], []
+
+self.knowledge.character.char_profile{style,role,voice_notes}: 
+  "", "", ""
+
+self.knowledge.character.char_mood{current,history[]}: 
+  "", []
+
+self.knowledge.character.char_memories[]: 
+  []
+
+memory_usage{total_budget,core_state_budget,indices_budget,history_budget}: 
+  50000, 8000, 12000, 30000
+
+rooms[N]:
+  rooms[*]{id,you,is_self_room,members[],attention_pct,importance,word_budget,history_budget,summary,messages[]}:
+    0,0,false,[],0.0,"",0,0,"",[]
+
+meta{available_actions, rules, response_format}: 
+  {…}, {…}, {…}
+
+
+That is the full static template—the LLM populates values, structures arrays, maintains its own knowledge, etc.
+
+4. Semantics of Each Section
+system{}
+
+Where you put:
+
+constant directives
+
+high-level rules
+
+global modes
+
+self.identity{}
+
+Only set once at agent creation.
+
+self.knowledge{}
+
+This is the agent’s writable memory.
+Everything it wants to keep must go here.
+
+It's structured so the LLM can:
+
+track its org model
+
+track memory budgets
+
+store task strategies
+
+store interpersonal state for role-play
+
+And importantly:
+the AI decides what goes here.
+You only give the structure.
+
+memory_usage{}
+
+Developer-managed.
+The model reads this to understand its token budget.
+
+rooms[N]{}
+
+App-injected runtime context + history.
+
+meta{}
+
+Your tool API instructions.
+
+5. Mapping TOON to JSON-Path Updates
+
+You will still use your current update ops:
+
+set
+
+append
+
+delete
+
+TOON doesn’t conflict with that.
+You implement:
+
+TOON_PATH → JSON_PATH
+
+You define a tiny translator:
+
+self.knowledge.ai.ai_core.goals[3]
+
+
+→ in TOON, that is represented positionally under:
+
+self.knowledge{ai,character}:
+  {ai_core{goals[],...}}, ...
+
+
+Since each section’s field-list is static, the mapping is deterministic.
+
+6. How TOON Helps Your 50k Budget
+You save tokens by removing:
+
+Quote marks
+
+Repeated field names
+
+Deep nesting
+
+Excess braces
+
+Commas separating every key/value pair
+
+Typical savings: 30–45%.
+
+Why this matters
+
+You are trying to build:
+
+a persistent working memory,
+
+multi-room episodic history,
+
+agent-written long-form knowledge,
+
+with a strict ~50k cap.
+
+TOON gives you back ~15–20k tokens worth of usable semantic space.
+
+That means:
+
+longer chain-of-thought inside the agent’s memory
+
+richer org-structure models
+
+deeper stored strategies
+
+more room for cached summaries and embeddings
+
+7. What You Need to Implement
+1. A TOON serializer
+
+Convert JSON objects → TOON string.
+
+2. A TOON deserializer
+
+Convert TOON → JSON object
+(easy because field-order is deterministic).
+
+3. A validator
+
+Make sure the TOON structure matches the declared contract.
+
+4. A patch translator
+
+Map your update instructions → JSON → TOON re-render.
+
+8. Optional: Let the AI Understand TOON Directly
+
+Add to system directives:
+
+You are reading and writing TOON (Token-Oriented Object Notation). 
+Each object defines its fields first: object{field1,field2}: value1,value2. 
+Arrays declare size with array[N]: then N entries.
+Strings are unquoted unless ambiguous.
+Maintain the order of declared fields.
+All knowledge you store goes into the self.knowledge.* subtree.
+This full HUD is your entire working memory for this turn.
+
+
+This ensures:
+
+The LLM doesn’t try to JSON-ify
+
+It keeps the structure clean
+
+It doesn't “hallucinate keys”, because the contract lists them

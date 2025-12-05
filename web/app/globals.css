@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* Custom scrollbar for dark theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1f2937;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+/* Status indicator animations */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.status-thinking {
+  animation: pulse 1s ease-in-out infinite;
+}
+
+/* Chat message styling */
+.chat-message {
+  @apply p-3 rounded-lg mb-2;
+}
+
+.chat-message-user {
+  @apply bg-blue-600/20 border border-blue-500/30;
+}
+
+.chat-message-agent {
+  @apply bg-gray-700/50 border border-gray-600/30;
+}
+
+.chat-message-system {
+  @apply bg-yellow-600/10 border border-yellow-500/20 text-yellow-200/80 text-sm italic;
+}
